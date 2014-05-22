@@ -14,7 +14,9 @@
 
 #include "cuda_runtime.h"
 
-__global__ void kernel(int NUMIT, int numPoints, int numCent, int dims, data_t ** x, data_t ** dist, data_t ** cent, data_t * mean, int * bestCent, data_t * cent_r){
+__global__ void kernel(int NUMIT, int numPoints, int numCent, int dims,
+					   data_t * x, data_t ** dist, data_t ** cent,
+					   data_t * mean, int * bestCent, data_t * cent_r){
 
 
     int it;
@@ -38,7 +40,7 @@ __global__ void kernel(int NUMIT, int numPoints, int numCent, int dims, data_t *
                 dist[j][k]=0;
                 for (e=0; e<dims; e++)
                 {
-                    dist[j][k]+=(x[j][e]-cent[k][e])*(x[j][e]-cent[k][e]);
+                    dist[j][k] += (X_(j, e) - cent[k][e]) * (X_(j, e) - cent[k][e]);
                     /* printf("   dist=%f\n",dist[j][k]);*/
                 }
                 /* printf("x[j]=(%f,%f), cent[k]=(%f,%f), dist[%d][%d]=%f\n",x[j][0],x[j][1],cent[k][0],cent[k][1],j,k,dist[j][k]); */
@@ -69,7 +71,7 @@ __global__ void kernel(int NUMIT, int numPoints, int numCent, int dims, data_t *
                 {
                     int e;
                     for (e=0; e<dims; e++)
-                        cent_r[e]+=x[j][e];
+                        cent_r[e]+=x[j * numPoints + e];
                     tot++;
                 }
             }

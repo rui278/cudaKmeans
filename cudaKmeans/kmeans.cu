@@ -55,7 +55,7 @@
 
 #include "kernel.h"
 
-__global__ void kernel(int NUMIT, int numPoints, int numCent, int dims, data_t ** x, data_t ** dist, data_t ** cent, data_t * mean, int * bestCent, data_t * cent_r);
+// __global__ void kernel(int NUMIT, int numPoints, int numCent, int dims, data_t ** x, data_t ** dist, data_t ** cent, data_t * mean, int * bestCent, data_t * cent_r);
 
 
 #ifdef COUNTTIME
@@ -73,18 +73,18 @@ int main(int argc, char *argv[])
 	int n;
 	
     /*Host data*/
-    data_t **x;		/* x[Lines][Columns]. Max values: x[numPoints][Dimensions] */
+    data_t *x;		/* Max values: x[numPoints * Dimensions]. Coordinate of point P, all 'dims' of them. Indexed as [P * dims + dim]. */
 	data_t **cent;	/* Coordinates of each centroid */
 	data_t *mean;
-	data_t **dist;
+	data_t **dist;	/* Distance between Point P and Centroid C. Indexed as [P][C]. */
 	int *bestCent;
     data_t *cent_r;
     
     /*device data*/
-    data_t **device_x;		/* x[Lines][Columns]. Max values: x[numPoints][Dimensions] */
-	data_t **device_cent;	/* Coordinates of each centroid */
-	data_t *device_mean;
-	data_t **device_dist;
+    data_t *device_x;		/* Max value: [numPoints * dims]. Layout is [x1 y1 x2 y2 x3 y3 ...] in case dims=2 */
+	data_t *device_cent;	/* Max value: [numCent * dims]. Layout is [cx1 cy1 cx2 cy2 cx3 cy3 ...] in case dims=2 */
+	data_t *device_mean;	/* Max value: [dims]. */
+	data_t *device_dist;	/* Max value: [numPoints * numCent]. Distance between Point P and Centroid C. Indexed as [P * dims + C]. */
 	int *device_bestCent;
     data_t *device_cent_r;
     
@@ -141,98 +141,70 @@ int main(int argc, char *argv[])
 	printf("Allocating memory\n");
     
 	/* allocate memory */
-	x=(data_t **)calloc(numPoints,sizeof(data_t *));
-    printf("allocated 0");
+	x=(data_t *)calloc(numPoints * dims,sizeof(data_t *));
+	if (x == NULL) printf("Error on calloc.\n");
 
-	dist=(data_t **)calloc(numPoints,sizeof(data_t *));
-    printf("allocated 0");
- 
-	mean=(data_t *)calloc(dims,sizeof(data_t));
-    printf("allocated 0");
-
-    
-	for (j=0; j<numPoints; j++)
-	{
-		x[j]=(data_t *)calloc(dims,sizeof(data_t));
-	}
-    printf("allocated 0");
-
-    
 	cent=(data_t **)calloc(numCent,sizeof(data_t *));
-    printf("allocated 0");
-
-	bestCent=(int *)calloc(numPoints,sizeof(int));
-    printf("allocated 0");
-
-    
-    for (j=0; j<numPoints; j++)
-	{
-		dist[j]=(data_t *)calloc(numCent,sizeof(data_t));
-	}
-    printf("allocated 0");
- 
+	if (cent == NULL) printf("Error on calloc.\n");
 	for (j=0; j<numCent; j++)
 	{
 		cent[j]=(data_t *)calloc(dims,sizeof(data_t));
+		if (cent[j] == NULL) printf("Error on calloc.\n");
 	}
-    printf("allocated 0");
 
+	mean=(data_t *)calloc(dims,sizeof(data_t));
+
+	dist=(data_t **)calloc(numPoints,sizeof(data_t *));
+	if (dist == NULL) printf("Error on calloc.\n");
+
+	for (j=0; j<numPoints; j++)
+	{
+		dist[j]=(data_t *)calloc(numCent,sizeof(data_t));
+		if (dist[j] == NULL) printf("Error on calloc.\n");
+	}
+
+	bestCent=(int *)calloc(numPoints,sizeof(int));
     
     cent_r=(data_t *)calloc(dims,sizeof(data_t));
-    printf("allocated 0");
+    
+	printf("Allocated host memory.\n");
 
-    cudaFree(0);
-    printf("allocated 0");
+
+
+
+
+
+	/* Memory allocation on the CUDA device */
+
+	/* Touch the device once to initialize it */
+    err[0] = cudaFree(0);
+	if (err[0] != cudaSuccess)
+	{
+		printf("Error: %d\n", cudaGetErrorString(err[0]));
+	}
 
     /*Allocate device memory*/
     
-    err[0] = cudaMalloc ((void **) &device_x, numPoints * sizeof(data_t *));
-    printf("allocated 0");
-    
-	err[1] = cudaMalloc ((void **) &device_dist, numPoints * sizeof(data_t *));
-    printf("allocated 0");
+ //   err[0] = cudaMalloc ((void **) &device_x, numPoints * dims * sizeof(data_t));
+	//err[1] = cudaMalloc ((void **) &device_cent, numCent * dims * sizeof(data_t));
 
-	err[2] = cudaMalloc ((void **) &device_mean, dims * sizeof(data_t));
-    printf("allocated 0");
+	//err[2] = cudaMalloc ((void **) &device_mean, dims * sizeof(data_t));
+	//err[3] = cudaMalloc ((void **) &device_dist, numPoints * numCent * sizeof(data_t));
 
-    
-	for (j=0; j<numPoints; j++)
-	{
-		err[3] = cudaMalloc ((void **) &device_x[j], dims * sizeof(data_t));
-	}
-    printf("allocated 0");
+	//err[4] = cudaMalloc ((void**) &device_bestCent, numPoints * sizeof(int));
+	//err[5] = cudaMalloc ((void**) &device_cent_r, dims * sizeof(data_t));
 
+ //   
+ //   for(n = 0; n < 6; n++) {
+ //       if(err[n] != cudaSuccess){
+ //           printf("Error allocating memory on device (error code %s). Exiting.", cudaGetErrorString(err[n]));
+ //           exit(0);
+ //       }
+ //   }
+
+	printf("Allocated memory on device.\n");
     
-	err[4] = cudaMalloc ((void **) &device_cent, numCent * sizeof(data_t *));
-    printf("allocated 0");
-    
-	err[5] = cudaMalloc ((void**) &device_bestCent, numPoints * sizeof(int));
-    printf("allocated 0");
-	
-    
-    for (j=0; j<numPoints; j++)
-	{
-		err[6] = cudaMalloc ((void**) &device_dist[j] , numCent * sizeof(data_t));
-	}
-    printf("allocated 0");
-    
-	for (j=0; j<numCent; j++)
-	{
-        err[7] = cudaMalloc ((void **) &device_cent[j], dims * sizeof(data_t));
-	}
-    printf("allocated 0");
-    
-    
-    err[8] = cudaMalloc ((void**) &device_cent_r, dims * sizeof(data_t));
-    
-    for(n = 0; n < 9; n++) {
-        if(err[n] != cudaSuccess){
-            printf("Error allocating memory on device (error code %s). Exiting.", cudaGetErrorString(err[n]));
-            exit(0);
-        }
-    }
-    
-	/*Generates Test set according to user specification*/
+	/*Generate Test set according to user specification*/
 	printf("Generating Test Set\n");
     
     
@@ -244,8 +216,8 @@ int main(int argc, char *argv[])
 	{
 		for(j = 0; j < dims; j++)
 		{
-			x[n][j] = myRand() % range;
-			mean[j] += x[n][j];
+			X_(n,j) = myRand() % range;
+			mean[j] += X_(n,j);
             
 			if(n < numCent){
 				cent[n][j] = myRand() % range;
@@ -258,36 +230,38 @@ int main(int argc, char *argv[])
 	{
 		mean[n] = mean[n]/numPoints;
 	}
-    
-    /*sending Data to Device*/
+
+    /* Sending Data to Device*/
     
 #ifdef COUNTTIME
     clock_gettime(CLOCK_REALTIME, &startCommTime);
 #endif
     
-//  err[0] = cudaMemcpy (device_x, x, numPoints * sizeof(data_t *));
+////  err[0] = cudaMemcpy (device_x, x, numPoints * sizeof(data_t *));
+////    
+////	err[1] = cudaMemcpy (device_dist,dist, numPoints * sizeof(data_t *));
+//
+//	err[0] = cudaMemcpy(device_x, x, numPoints * dims * sizeof(data_t), cudaMemcpyHostToDevice);
 //    
-//	err[1] = cudaMemcpy (device_dist,dist, numPoints * sizeof(data_t *));
-    
-	err[2] = cudaMemcpy (device_mean,mean, dims * sizeof(data_t), cudaMemcpyHostToDevice);
-    
-    err[5] = cudaMemcpy (device_bestCent,bestCent, numPoints * sizeof(int), cudaMemcpyHostToDevice);
-    
-    err[8] = cudaMemcpy (device_cent_r, cent_r,dims * sizeof(data_t), cudaMemcpyHostToDevice);
-    
-	for (j=0; j<numPoints; j++)
-	{
-		err[3] = cudaMemcpy (device_x[j],x[j], dims * sizeof(data_t), cudaMemcpyHostToDevice);
-        err[6] = cudaMemcpy (device_dist[j] , dist[j],numCent * sizeof(data_t), cudaMemcpyHostToDevice);
-	}
-    
-    
-//	err[4] = cudaMemcpy (device_cent,cent, numCent * sizeof(data_t *));
-    
-	for (j=0; j<numCent; j++)
-	{
-        err[7] = cudaMemcpy (device_cent[j],cent[j], dims * sizeof(data_t), cudaMemcpyHostToDevice);
-	}
+//	err[2] = cudaMemcpy (device_mean,mean, dims * sizeof(data_t), cudaMemcpyHostToDevice);
+//    
+//    err[5] = cudaMemcpy (device_bestCent,bestCent, numPoints * sizeof(int), cudaMemcpyHostToDevice);
+//    
+//    err[8] = cudaMemcpy (device_cent_r, cent_r,dims * sizeof(data_t), cudaMemcpyHostToDevice);
+//    
+//	//for (j=0; j<numPoints; j++)
+//	//{
+//		// err[3] = cudaMemcpy (device_x[j],x[j], dims * sizeof(data_t), cudaMemcpyHostToDevice);
+//        //err[6] = cudaMemcpy (device_dist[j] , dist[j],numCent * sizeof(data_t), cudaMemcpyHostToDevice);
+//	//}
+//    
+//    
+////	err[4] = cudaMemcpy (device_cent,cent, numCent * sizeof(data_t *));
+//    
+//	for (j=0; j<numCent; j++)
+//	{
+//        //err[7] = cudaMemcpy (device_cent[j],cent[j], dims * sizeof(data_t), cudaMemcpyHostToDevice);
+//	}
     
 #ifdef COUNTTIME
     clock_gettime(CLOCK_REALTIME, &endCommTime);
@@ -300,7 +274,12 @@ int main(int argc, char *argv[])
     clock_gettime(CLOCK_REALTIME, &startTime);
 #endif
     
-    kernel<<<1, 1>>>(NUMIT, numPoints, numCent, dims, device_x, device_dist, device_cent, device_mean, device_bestCent, device_cent_r);
+	// Try to run on host
+	kernel(NUMIT, numPoints, numCent, dims,
+			x, dist, cent,
+			mean, bestCent, cent_r);
+
+    // kernel<<<1, 1>>>(NUMIT, numPoints, numCent, dims, device_x, device_dist, device_cent, device_mean, device_bestCent, device_cent_r);
     
 #ifdef COUNTTIME
     clock_gettime(CLOCK_REALTIME, &endTime);
@@ -368,89 +347,89 @@ void mySrand(int seed)
 //  Created by Rui on 22/05/14.
 //  Copyright (c) 2014 __Grupo215AAC__. All rights reserved.
 //
-
-#include <stdio.h>
-#include <string.h>
-#include <limits.h>
-
-#include "kernel.h"
-
-#include "cuda_runtime.h"
-
-__global__ void kernel(int NUMIT, int numPoints, int numCent, int dims, data_t ** x, data_t ** dist, data_t ** cent, data_t * mean, int * bestCent, data_t * cent_r){
-    
-    
-    int it;
-    int j, k;
-    
-    
-    for (it=0; it<NUMIT; it++)
-    {
-        /* calculate distance matrix and minimum */
-        data_t rMin;
-        int count;
-        
-        count=0;
-        
-        for (j=0; j<numPoints; j++)
-        {
-            rMin=INT_MAX;
-            for (k=0; k < numCent; k++)
-            {
-                int e;
-                dist[j][k]=0;
-                for (e=0; e<dims; e++)
-                {
-                    dist[j][k]+=(x[j][e]-cent[k][e])*(x[j][e]-cent[k][e]);
-                    /* printf("   dist=%f\n",dist[j][k]);*/
-                }
-                /* printf("x[j]=(%f,%f), cent[k]=(%f,%f), dist[%d][%d]=%f\n",x[j][0],x[j][1],cent[k][0],cent[k][1],j,k,dist[j][k]); */
-                if (dist[j][k] < rMin)
-                {
-                    bestCent[j]=k;
-                    rMin=dist[j][k];
-                }
-            }
-            count++;
-        }
-        
-        /* reestimate centroids */
-        for (k=0; k<numCent; k++)
-        {
-            
-            int tot;
-            
-            /* Count number of points belonging to this centroid, and accumulate coordinates */
-            
-            
-            memset(cent_r, 0, sizeof(data_t) * dims);
-            
-            tot=0;
-            for (j=0; j<numPoints; j++)
-            {
-                if (bestCent[j]==k)
-                {
-                    int e;
-                    for (e=0; e<dims; e++)
-                        cent_r[e]+=x[j][e];
-                    tot++;
-                }
-            }
-            
-            /* If centroid has more than 0 points associated (normal), relocate it to mean of its points. */
-            if (tot > 0)
-            {
-                int e;
-                for (e=0; e<dims; e++)
-                    cent[k][e]=cent_r[e]/tot;
-            }
-            /* Else, relocate it to the mean of the other centroids (put it near points) */
-            else
-            {
-                int e;
-                for (e=0; e<dims; e++)
-                    cent[k][e]=mean[e];
-            }
-        }
-    }
-}
+//
+//#include <stdio.h>
+//#include <string.h>
+//#include <limits.h>
+//
+//#include "kernel.h"
+//
+//#include "cuda_runtime.h"
+//
+//__global__ void kernel(int NUMIT, int numPoints, int numCent, int dims, data_t ** x, data_t ** dist, data_t ** cent, data_t * mean, int * bestCent, data_t * cent_r){
+//    
+//    
+//    int it;
+//    int j, k;
+//    
+//    
+//    for (it=0; it<NUMIT; it++)
+//    {
+//        /* calculate distance matrix and minimum */
+//        data_t rMin;
+//        int count;
+//        
+//        count=0;
+//        
+//        for (j=0; j<numPoints; j++)
+//        {
+//            rMin=INT_MAX;
+//            for (k=0; k < numCent; k++)
+//            {
+//                int e;
+//                dist[j][k]=0;
+//                for (e=0; e<dims; e++)
+//                {
+//                    dist[j][k]+=(x[j][e]-cent[k][e])*(x[j][e]-cent[k][e]);
+//                    /* printf("   dist=%f\n",dist[j][k]);*/
+//                }
+//                /* printf("x[j]=(%f,%f), cent[k]=(%f,%f), dist[%d][%d]=%f\n",x[j][0],x[j][1],cent[k][0],cent[k][1],j,k,dist[j][k]); */
+//                if (dist[j][k] < rMin)
+//                {
+//                    bestCent[j]=k;
+//                    rMin=dist[j][k];
+//                }
+//            }
+//            count++;
+//        }
+//        
+//        /* reestimate centroids */
+//        for (k=0; k<numCent; k++)
+//        {
+//            
+//            int tot;
+//            
+//            /* Count number of points belonging to this centroid, and accumulate coordinates */
+//            
+//            
+//            memset(cent_r, 0, sizeof(data_t) * dims);
+//            
+//            tot=0;
+//            for (j=0; j<numPoints; j++)
+//            {
+//                if (bestCent[j]==k)
+//                {
+//                    int e;
+//                    for (e=0; e<dims; e++)
+//                        cent_r[e]+=x[j][e];
+//                    tot++;
+//                }
+//            }
+//            
+//            /* If centroid has more than 0 points associated (normal), relocate it to mean of its points. */
+//            if (tot > 0)
+//            {
+//                int e;
+//                for (e=0; e<dims; e++)
+//                    cent[k][e]=cent_r[e]/tot;
+//            }
+//            /* Else, relocate it to the mean of the other centroids (put it near points) */
+//            else
+//            {
+//                int e;
+//                for (e=0; e<dims; e++)
+//                    cent[k][e]=mean[e];
+//            }
+//        }
+//    }
+//}
