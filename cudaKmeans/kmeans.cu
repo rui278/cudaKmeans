@@ -307,12 +307,21 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 
+	data_t *cudaCent = (data_t *) calloc(numCent * dims, sizeof(data_t));
+	if (cudaCent == NULL)
+	{
+		printf("Failed to allocate extra space for device's result.\n");
+		exit(1);
+	}
+
 #ifdef COUNTTIME
 	clock_gettime(CLOCK_REALTIME, &memBackStartTime);
 #endif
 
 	err[0] = cudaMemcpy (cudaBestCent, device_bestCent, numPoints * sizeof(int), cudaMemcpyDeviceToHost);
-	if (err[0] != cudaSuccess)
+	err[1] = cudaMemcpy (cudaCent, device_cent, numCent * dims * sizeof(int), cudaMemcpyDeviceToHost);
+	
+	if (err[0] != cudaSuccess || err[1] != cudaSuccess)
 	{
 		printf("Failed to transfer device's result: %s\n", cudaGetErrorString(err[0]));
 		exit(1);
@@ -327,9 +336,23 @@ int main(int argc, char *argv[])
 	{
 		if (cudaBestCent[j] != bestCent[j])
 		{
-			printf("Error: Host and device results do not match.\n");
+			printf("Error: Host and device bestCent results do not match.\n");
 			printf("Error at %d\n\tHost has %d\n\tDevice has %d\n", j, bestCent[j], cudaBestCent[j]);
 			exit(1);
+		}
+	}
+
+	for (k = 0; k < numCent; k++)
+	{
+		int e;
+		for (e = 0; e < dims; e++)
+		{
+			if (cent[k * dims + e] != cudaCent[k * dims + e])
+			{
+				printf("Error: Host and device cent results do not match.\n");
+				printf("Error at centroid %d\n", k);
+				exit(1);
+			}
 		}
 	}
 
