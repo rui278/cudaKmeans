@@ -79,12 +79,15 @@ int main(int argc, char *argv[])
 	data_t *cent_r; /* Length: dims. Used as temporary variable. */
 
 	/*Device data*/
+	/* TODO: put device_x in constant texture memory - should be faster */
 	data_t *device_x;		/* Max value: [numPoints * dims]. Layout is [x1 y1 x2 y2 x3 y3 ...] in case dims=2 */
 	data_t *device_cent;	/* Max value: [numCent * dims]. Layout is [cx1 cy1 cx2 cy2 cx3 cy3 ...] in case dims=2 */
 	data_t *device_mean;	/* Max value: [dims]. */
-	data_t *device_dist;	/* Max value: [numPoints * numCent]. Distance between Point P and Centroid C. Indexed as [P * dims + C]. */
+	data_t *device_dist;	/* Max value: [numPoints * numCent]. Distance between Point P and Centroid C. Indexed as [P * numCent + C]. */
 	int *device_bestCent;	/* Length: numPoints */
-	data_t *device_cent_r;	/* Length: dims. Used as temporary variable. */
+	data_t *device_cent_r;	/* Length: dims * numCent. Used as temporary variables for accumulation. */
+	int *device_cent_tot;	/* Number of points for each centroid, global to all blocks. Length: numCent */
+	int *device_cent_partial_tot;	/* Number of points for each centroid, local to one block. Length: numCent */
 
 	int numPoints;	/* Number of points */
 	int dims;		/* Dimensions */
@@ -94,8 +97,11 @@ int main(int argc, char *argv[])
 	int range;
 	int randSeed;
 
+	int numThreads;	/* Number of threads per block */
+	int numBlocks;	/* Number of blocks */
+
 	void * hostErr [6];  // Errors for malloc
-	cudaError_t err[6]; // Errors for cudaMalloc and cudaMemcpy
+	cudaError_t err[8]; // Errors for cudaMalloc and cudaMemcpy
 
 #ifdef COUNTTIME
 	struct timespec hostStartTime;
@@ -106,6 +112,9 @@ int main(int argc, char *argv[])
 
 	struct timespec startCommTime;
 	struct timespec endCommTime;
+
+	struct timespec memBackStartTime;
+	struct timespec memBackEndTime;
 #endif
 
 	/* Check correct number of input parameters */
@@ -158,8 +167,9 @@ int main(int argc, char *argv[])
 		}
 	}
 
-
-
+	/* Calculate kernel parameters */
+	numThreads = numPoints;
+	numBlocks = 1;
 
 
 	/* Memory allocation on the CUDA device */
@@ -180,9 +190,12 @@ int main(int argc, char *argv[])
 	err[2] = cudaMalloc ((void **) &device_mean, dims * sizeof(data_t));
 	err[3] = cudaMalloc ((void **) &device_dist, numPoints * numCent * sizeof(data_t));
 	err[4] = cudaMalloc ((void **) &device_bestCent, numPoints * sizeof(int));
-	err[5] = cudaMalloc ((void **) &device_cent_r, dims * sizeof(data_t));
+	err[5] = cudaMalloc ((void **) &device_cent_r, dims * numCent * sizeof(data_t));
+	
+	err[6] = cudaMalloc ((void **) &device_cent_tot, numCent * sizeof(int));
+	err[7] = cudaMalloc ((void **) &device_cent_partial_tot, numCent * numBlocks * sizeof(int));
 
-	for(n = 0; n < 6; n++) {
+	for(n = 0; n < 8; n++) {
 		if(err[n] != cudaSuccess){
 			printf("Error allocating memory on device: %s\nExiting.\n", cudaGetErrorString(err[n]));
 			exit(1);
@@ -226,7 +239,10 @@ int main(int argc, char *argv[])
 	err[4] = cudaMemcpy (device_bestCent,bestCent, numPoints * sizeof(int), cudaMemcpyHostToDevice);
 	err[5] = cudaMemcpy (device_cent_r, cent_r,dims * sizeof(data_t), cudaMemcpyHostToDevice);
 
-	for(n = 0; n < 6; n++) {
+	err[6] = cudaMemset (device_cent_tot, 0, numCent * sizeof(int));
+	err[7] = cudaMemset (device_cent_partial_tot, 0, numCent * numBlocks * sizeof(int));
+
+	for(n = 0; n < 8; n++) {
 		if(err[n] != cudaSuccess){
 			printf("Error allocating memory on device (error code %s). Exiting.", cudaGetErrorString(err[n]));
 			exit(0);
@@ -254,17 +270,34 @@ int main(int argc, char *argv[])
 
 	printf("Starting device calculation.\n");
 
+	size_t heap_size;
+	cudaDeviceGetLimit(&heap_size, cudaLimitMallocHeapSize);
+
 #ifdef COUNTTIME
 	clock_gettime(CLOCK_REALTIME, &startTime);
 #endif
 
-	kernel<<<1, 1>>>(NUMIT, numPoints, numCent, dims,
+	kernel<<<numBlocks, numThreads>>>(NUMIT, numPoints, numCent, dims,
 					device_x, device_dist, device_cent,
-					device_mean, device_bestCent, device_cent_r);
+					device_mean, device_bestCent, device_cent_r,
+					1,
+					device_cent_partial_tot,
+					device_cent_tot
+					);
+
+	cudaDeviceSynchronize();
+
+	err[0] = cudaGetLastError();
+	if (err[0] != cudaSuccess)
+	{
+		printf("Oh shit, shit happened: %s\n", cudaGetErrorString(err[0]));
+	}
 
 #ifdef COUNTTIME
 	clock_gettime(CLOCK_REALTIME, &endTime);
 #endif
+
+	printf("End of device calculation.\n");
 
 	/* Pull results back from device */
 	int *cudaBestCent = (int *) calloc(numPoints, sizeof(int));
@@ -274,12 +307,20 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 
+#ifdef COUNTTIME
+	clock_gettime(CLOCK_REALTIME, &memBackStartTime);
+#endif
+
 	err[0] = cudaMemcpy (cudaBestCent, device_bestCent, numPoints * sizeof(int), cudaMemcpyDeviceToHost);
 	if (err[0] != cudaSuccess)
 	{
 		printf("Failed to transfer device's result: %s\n", cudaGetErrorString(err[0]));
 		exit(1);
 	}
+
+#ifdef COUNTTIME
+	clock_gettime(CLOCK_REALTIME, &memBackEndTime);
+#endif
 
 	/* Verify device results */
 	for (j = 0; j < numPoints; j++)
@@ -314,6 +355,7 @@ int main(int argc, char *argv[])
 	printf("Communication Host->Device time: %f s\n", timeDiff(startCommTime, endCommTime));
 	printf("Algorithm Host Computation:      %f s\n", hostTime);
 	printf("Algorithm Device Computation:    %f s\n", deviceTime);
+	printf("Communication Device->Host time: %f s\n", timeDiff(memBackStartTime, memBackEndTime));
 	printf("Speed-up: %f\n", hostTime / deviceTime);
 #endif
 
