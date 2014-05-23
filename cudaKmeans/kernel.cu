@@ -13,10 +13,13 @@
 #include "kernel.h"
 
 #include "cuda_runtime.h"
+#include"device_launch_parameters.h"
 
-__global__ void kernel(int NUMIT, int numPoints, int numCent, int dims,
-					   data_t * x, data_t ** dist, data_t ** cent,
-					   data_t * mean, int * bestCent, data_t * cent_r){
+__global__ void
+	kernel(int NUMIT, int numPoints, int numCent, int dims,
+			data_t * x, data_t * dist, data_t * cent,
+			data_t * mean, int * bestCent, data_t * cent_r)
+{
 
 
     int it;
@@ -37,17 +40,17 @@ __global__ void kernel(int NUMIT, int numPoints, int numCent, int dims,
             for (k=0; k < numCent; k++)
             {
                 int e;
-                dist[j][k]=0;
+                DIST_(j, k)=0;
                 for (e=0; e<dims; e++)
                 {
-                    dist[j][k] += (X_(j, e) - cent[k][e]) * (X_(j, e) - cent[k][e]);
+                    DIST_(j, k) += (X_(j, e) - CENT_(k, e)) * (X_(j, e) - CENT_(k, e));
                     /* printf("   dist=%f\n",dist[j][k]);*/
                 }
                 /* printf("x[j]=(%f,%f), cent[k]=(%f,%f), dist[%d][%d]=%f\n",x[j][0],x[j][1],cent[k][0],cent[k][1],j,k,dist[j][k]); */
-                if (dist[j][k] < rMin)
+                if (DIST_(j, k) < rMin)
                 {
                     bestCent[j]=k;
-                    rMin=dist[j][k];
+                    rMin=DIST_(j, k);
                 }
             }
             count++;
@@ -71,7 +74,7 @@ __global__ void kernel(int NUMIT, int numPoints, int numCent, int dims,
                 {
                     int e;
                     for (e=0; e<dims; e++)
-                        cent_r[e]+=x[j * numPoints + e];
+                        cent_r[e]+=X_(j,e);
                     tot++;
                 }
             }
@@ -81,14 +84,14 @@ __global__ void kernel(int NUMIT, int numPoints, int numCent, int dims,
             {
                 int e;
                 for (e=0; e<dims; e++)
-                    cent[k][e]=cent_r[e]/tot;
+                    CENT_(k, e)=cent_r[e]/tot;
             }
             /* Else, relocate it to the mean of the other centroids (put it near points) */
             else
             {
                 int e;
                 for (e=0; e<dims; e++)
-                    cent[k][e]=mean[e];
+                    CENT_(k, e)=mean[e];
             }
         }
     }

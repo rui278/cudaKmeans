@@ -15,6 +15,10 @@
 #define DIST_(p, c)   (dist[p * dims + c])
 #define CENT_(c, d)   (cent[c * dims + d])
 
-void kernel(int NUMIT, int numPoints, int numCent, int dims, data_t * x, data_t ** dist, data_t ** cent, data_t * mean, int * bestCent, data_t * cent_r);
+/* Executes K-Means algorithm on the CPU (host) */
+void hostKmeans(int NUMIT, int numPoints, int numCent, int dims, data_t * x, data_t * dist, data_t * cent, data_t * mean, int * bestCent, data_t * cent_r);
+
+/* Executes K-Means algorithm on the GPU (device) */
+__global__ void kernel(int NUMIT, int numPoints, int numCent, int dims, data_t * x, data_t * dist, data_t * cent, data_t * mean, int * bestCent, data_t * cent_r);
 
 #endif

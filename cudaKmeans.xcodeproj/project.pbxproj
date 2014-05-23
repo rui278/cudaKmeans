@@ -7,7 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		4D73B7EE192BB60F00BBE357 /* main.c in Sources */ = {isa = PBXBuildFile; fileRef = 4D73B7ED192BB60F00BBE357 /* main.c */; };
 		4D73B7F0192BB60F00BBE357 /* cudaKmeans.1 in CopyFiles */ = {isa = PBXBuildFile; fileRef = 4D73B7EF192BB60F00BBE357 /* cudaKmeans.1 */; };
 /* End PBXBuildFile section */
 
@@ -25,8 +24,10 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		4D24E439192E61A0004EF18A /* kernel.cu */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = kernel.cu; sourceTree = "<group>"; };
+		4D24E43A192E61A0004EF18A /* kmeans.cu */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = kmeans.cu; sourceTree = "<group>"; };
+		4D4C31C5192DE8B5002FEE2F /* kernel.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = kernel.h; sourceTree = "<group>"; };
 		4D73B7EA192BB60F00BBE357 /* cudaKmeans */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = cudaKmeans; sourceTree = BUILT_PRODUCTS_DIR; };
-		4D73B7ED192BB60F00BBE357 /* main.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = main.c; sourceTree = "<group>"; };
 		4D73B7EF192BB60F00BBE357 /* cudaKmeans.1 */ = {isa = PBXFileReference; lastKnownFileType = text.man; path = cudaKmeans.1; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -60,7 +61,9 @@
 		4D73B7EC192BB60F00BBE357 /* cudaKmeans */ = {
 			isa = PBXGroup;
 			children = (
-				4D73B7ED192BB60F00BBE357 /* main.c */,
+				4D24E439192E61A0004EF18A /* kernel.cu */,
+				4D24E43A192E61A0004EF18A /* kmeans.cu */,
+				4D4C31C5192DE8B5002FEE2F /* kernel.h */,
 				4D73B7EF192BB60F00BBE357 /* cudaKmeans.1 */,
 			);
 			path = cudaKmeans;
@@ -117,7 +120,6 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				4D73B7EE192BB60F00BBE357 /* main.c in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -227,6 +229,7 @@
 				4D73B7F5192BB60F00BBE357 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
 	};
