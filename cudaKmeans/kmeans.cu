@@ -182,19 +182,11 @@ int main(int argc, char *argv[])
 	// int maxThreads = props.maxThreadsPerMultiProcessor * props
 
 	// For the classifyPoints kernel
-	// Work to be done: numPoints * numCent
-
-	//numPointsPerThread = numPoints / 4096; // Assuming 4096 threads, and numPoints > 4096
-	//if (numPoints % 4096 != 0)
-	//	numPointsPerThread++; // Always round up
-
-	//numThreadsPerBlock = 1024;
-	//
-	//numBlocks = 4096 / numThreadsPerBlock;
+	// Work to be done: numPoints
 
 	numPointsPerThread = numPoints / 4096;
 		if (numPoints % 4096 != 0)
-			numPointsPerThread++; // Always round up
+			numPointsPerThread++;
 
 	numBlocks = 4;
 	numThreadsPerBlock = 1024;
@@ -202,6 +194,12 @@ int main(int argc, char *argv[])
 	numCentPerThread = numCent / 4096;
 		if (numCent % 4096 != 0)
 			numCentPerThread++; // Always round up
+
+	// Test
+	numThreadsPerBlock = 1024;
+	numBlocks = (numPoints / 4 + numThreadsPerBlock - 1) / numThreadsPerBlock;
+	numPointsPerThread = 4;
+	numCentPerThread = 1;
 	
 
 
@@ -313,44 +311,67 @@ int main(int argc, char *argv[])
 	int it;
 	for (it = 0; it < NUMIT; it++)
 	{
-		classifyPoints<<<numBlocks, numThreadsPerBlock>>>(NUMIT, numPoints, numCent, dims,
-						device_x, device_dist, device_cent,
-						device_mean, device_bestCent, device_cent_r,
-						numPointsPerThread,
-						device_cent_partial_tots,
-						device_cent_tot
-						);
-
-		// TODO 
 		clearVars<<<numBlocks, numThreadsPerBlock>>>(
-						numCent, dims,
+						numCent,
+						dims,
 						numCentPerThread,
 						device_cent_r,
-						device_cent_partial_tots,
 						device_cent_tot
 						);
 
-		accumulateTotals<<<numBlocks, numThreadsPerBlock>>>(NUMIT, numPoints, numCent, dims,
-						device_x, device_dist, device_cent,
-						device_mean, device_bestCent, device_cent_r,
+		///* Pull results back from device */
+		//data_t *checkCent_r = (int *) malloc(numCent * dims * sizeof(data_t));
+		//cudaMemcpy (checkCent_r, device_cent_r, numCent * dims * sizeof(data_t), cudaMemcpyDeviceToHost);
+		//int i;
+		//for (i = 0; i < numCent * dims; i++)
+		//{
+		//	if (checkCent_r[i] != 0)
+		//		printf("Shit's not zero at %d\n", i);
+		//}
+		//free (checkCent_r);
+
+		// cudaMemset(device_dist, 0, numPoints * numCent * sizeof(data_t));
+
+		classifyPoints<<<numBlocks, numThreadsPerBlock>>>(
+						NUMIT,
+						numPoints,
+						numCent,
+						dims,
+						device_x,
+						device_dist,
+						device_cent,
+						device_bestCent,
+						device_cent_r,
 						numPointsPerThread,
-						device_cent_partial_tots,
 						device_cent_tot
 						);
 
-		reduceTotals<<<numBlocks, numThreadsPerBlock>>>(NUMIT, numPoints, numCent, dims,
-						device_x, device_dist, device_cent,
-						device_mean, device_bestCent, device_cent_r,
+		/* Pull results back from device */
+		//data_t *checkDist = (int *) malloc(numCent * numPoints * sizeof(data_t));
+		//cudaMemcpy (checkDist, device_dist, numCent * numPoints * sizeof(data_t), cudaMemcpyDeviceToHost);
+		//int i;
+		//for (i = 0; i < numCent * numPoints; i++)
+		//{
+		//	if (checkDist[i] != dist[i])
+		//	{
+		//		printf("Dist shit's not right at %d\n", i);
+		//		break;
+		//	}
+		//}
+		//free (checkDist);
+
+		calculateCentroids<<<numBlocks, numThreadsPerBlock>>>(
+						NUMIT,
+						numPoints,
+						numCent,
+						dims,
+						device_x,
+						device_dist,
+						device_cent,
+						device_mean,
+						device_bestCent,
+						device_cent_r,
 						numCentPerThread,
-						device_cent_partial_tots,
-						device_cent_tot
-						);
-
-		calculateCentroids<<<1, 1>>>(NUMIT, numPoints, numCent, dims,
-						device_x, device_dist, device_cent,
-						device_mean, device_bestCent, device_cent_r,
-						numPointsPerThread,
-						device_cent_partial_tots,
 						device_cent_tot
 						);
 
@@ -360,7 +381,7 @@ int main(int argc, char *argv[])
 	err[0] = cudaGetLastError();
 	if (err[0] != cudaSuccess)
 	{
-		printf("Oh shit, shit happened: %s\n", cudaGetErrorString(err[0]));
+		printf("Oh no, something happened: %s\n", cudaGetErrorString(err[0]));
 		exit(1);
 	}
 
