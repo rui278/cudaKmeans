@@ -87,7 +87,7 @@ int main(int argc, char *argv[])
 	int *device_bestCent;	/* Length: numPoints */
 	data_t *device_cent_r;	/* Length: dims * numCent. Used as temporary variables for accumulation. */
 	int *device_cent_tot;	/* Number of points for each centroid, global to all blocks. Length: numCent */
-	int *device_cent_partial_tot;	/* Number of points for each centroid, local to one block. Length: numCent */
+	int *device_cent_partial_tots;	/* Number of points for each centroid, local to one block. Length: numCent */
 
 	int numPoints;	/* Number of points */
 	int dims;		/* Dimensions */
@@ -97,11 +97,13 @@ int main(int argc, char *argv[])
 	int range;
 	int randSeed;
 
-	int numThreads;	/* Number of threads per block */
-	int numBlocks;	/* Number of blocks */
+	int numThreadsPerBlock;	/* Number of threads per block */
+	int numPointsPerThread;	/* Number of points per thread */
+	int numBlocks;			/* Number of blocks */
+	int numCentPerThread;
 
-	void * hostErr [6];  // Errors for malloc
-	cudaError_t err[8]; // Errors for cudaMalloc and cudaMemcpy
+	void * hostErr [6];	// Errors for malloc
+	cudaError_t err[8];	// Errors for cudaMalloc and cudaMemcpy
 
 #ifdef COUNTTIME
 	struct timespec hostStartTime;
@@ -168,8 +170,39 @@ int main(int argc, char *argv[])
 	}
 
 	/* Calculate kernel parameters */
-	numThreads = numPoints;
-	numBlocks = 1;
+
+	cudaDeviceProp props;
+	err[0] = cudaGetDeviceProperties (&props, 0);
+	if (err[0] != cudaSuccess)
+	{
+		printf("Error, could not find device 0: %s\n", cudaGetErrorString(err[0]));
+		exit(1);
+	}
+
+	// int maxThreads = props.maxThreadsPerMultiProcessor * props
+
+	// For the classifyPoints kernel
+	// Work to be done: numPoints * numCent
+
+	//numPointsPerThread = numPoints / 4096; // Assuming 4096 threads, and numPoints > 4096
+	//if (numPoints % 4096 != 0)
+	//	numPointsPerThread++; // Always round up
+
+	//numThreadsPerBlock = 1024;
+	//
+	//numBlocks = 4096 / numThreadsPerBlock;
+
+	numPointsPerThread = numPoints / 4096;
+		if (numPoints % 4096 != 0)
+			numPointsPerThread++; // Always round up
+
+	numBlocks = 4;
+	numThreadsPerBlock = 1024;
+
+	numCentPerThread = numCent / 4096;
+		if (numCent % 4096 != 0)
+			numCentPerThread++; // Always round up
+	
 
 
 	/* Memory allocation on the CUDA device */
@@ -193,7 +226,7 @@ int main(int argc, char *argv[])
 	err[5] = cudaMalloc ((void **) &device_cent_r, dims * numCent * sizeof(data_t));
 	
 	err[6] = cudaMalloc ((void **) &device_cent_tot, numCent * sizeof(int));
-	err[7] = cudaMalloc ((void **) &device_cent_partial_tot, numCent * numBlocks * sizeof(int));
+	err[7] = cudaMalloc ((void **) &device_cent_partial_tots, numCent * numBlocks * sizeof(int));
 
 	for(n = 0; n < 8; n++) {
 		if(err[n] != cudaSuccess){
@@ -237,10 +270,10 @@ int main(int argc, char *argv[])
 	err[2] = cudaMemcpy (device_mean, mean, dims * sizeof(data_t), cudaMemcpyHostToDevice);
 	err[3] = cudaMemcpy (device_dist, dist, numPoints * numCent * sizeof(data_t), cudaMemcpyHostToDevice);
 	err[4] = cudaMemcpy (device_bestCent,bestCent, numPoints * sizeof(int), cudaMemcpyHostToDevice);
-	err[5] = cudaMemcpy (device_cent_r, cent_r,dims * sizeof(data_t), cudaMemcpyHostToDevice);
+	err[5] = cudaMemcpy (device_cent_r, cent_r, dims * numCent * sizeof(data_t), cudaMemcpyHostToDevice);
 
 	err[6] = cudaMemset (device_cent_tot, 0, numCent * sizeof(int));
-	err[7] = cudaMemset (device_cent_partial_tot, 0, numCent * numBlocks * sizeof(int));
+	err[7] = cudaMemset (device_cent_partial_tots, 0, numCent * numBlocks * sizeof(int));
 
 	for(n = 0; n < 8; n++) {
 		if(err[n] != cudaSuccess){
@@ -277,20 +310,58 @@ int main(int argc, char *argv[])
 	clock_gettime(CLOCK_REALTIME, &startTime);
 #endif
 
-	kernel<<<numBlocks, numThreads>>>(NUMIT, numPoints, numCent, dims,
-					device_x, device_dist, device_cent,
-					device_mean, device_bestCent, device_cent_r,
-					1,
-					device_cent_partial_tot,
-					device_cent_tot
-					);
+	int it;
+	for (it = 0; it < NUMIT; it++)
+	{
+		classifyPoints<<<numBlocks, numThreadsPerBlock>>>(NUMIT, numPoints, numCent, dims,
+						device_x, device_dist, device_cent,
+						device_mean, device_bestCent, device_cent_r,
+						numPointsPerThread,
+						device_cent_partial_tots,
+						device_cent_tot
+						);
 
+		// TODO 
+		clearVars<<<numBlocks, numThreadsPerBlock>>>(
+						numCent, dims,
+						numCentPerThread,
+						device_cent_r,
+						device_cent_partial_tots,
+						device_cent_tot
+						);
+
+		accumulateTotals<<<numBlocks, numThreadsPerBlock>>>(NUMIT, numPoints, numCent, dims,
+						device_x, device_dist, device_cent,
+						device_mean, device_bestCent, device_cent_r,
+						numPointsPerThread,
+						device_cent_partial_tots,
+						device_cent_tot
+						);
+
+		reduceTotals<<<numBlocks, numThreadsPerBlock>>>(NUMIT, numPoints, numCent, dims,
+						device_x, device_dist, device_cent,
+						device_mean, device_bestCent, device_cent_r,
+						numCentPerThread,
+						device_cent_partial_tots,
+						device_cent_tot
+						);
+
+		calculateCentroids<<<1, 1>>>(NUMIT, numPoints, numCent, dims,
+						device_x, device_dist, device_cent,
+						device_mean, device_bestCent, device_cent_r,
+						numPointsPerThread,
+						device_cent_partial_tots,
+						device_cent_tot
+						);
+
+	}
 	cudaDeviceSynchronize();
 
 	err[0] = cudaGetLastError();
 	if (err[0] != cudaSuccess)
 	{
 		printf("Oh shit, shit happened: %s\n", cudaGetErrorString(err[0]));
+		exit(1);
 	}
 
 #ifdef COUNTTIME
@@ -356,18 +427,18 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	/* write clusters to screen */
-	printf("\nDevice results\n=========\n");
+	///* write clusters to screen */
+	//printf("\nDevice results\n=========\n");
 
-	for (k=0; k<numCent; k++)
-	{
-		printf("\nCluster %d\n=========\n",k);
-		for (j=0; j<numPoints; j++)
-		{
-			if (cudaBestCent[j]==k)
-				printf("point %d\n",j);
-		}
-	}
+	//for (k=0; k<numCent; k++)
+	//{
+	//	printf("\nCluster %d\n=========\n",k);
+	//	for (j=0; j<numPoints; j++)
+	//	{
+	//		if (cudaBestCent[j]==k)
+	//			printf("point %d\n",j);
+	//	}
+	//}
 
 #ifdef COUNTTIME
 
@@ -379,9 +450,10 @@ int main(int argc, char *argv[])
 	printf("Algorithm Host Computation:      %f s\n", hostTime);
 	printf("Algorithm Device Computation:    %f s\n", deviceTime);
 	printf("Communication Device->Host time: %f s\n", timeDiff(memBackStartTime, memBackEndTime));
-	printf("Speed-up: %f\n", hostTime / deviceTime);
+	printf("\nSpeed-up: %f\n", hostTime / deviceTime);
 #endif
 
+	printf("\nAll OK.\n");
 	exit(0);
 }
 
