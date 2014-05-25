@@ -87,7 +87,6 @@ __global__ void
 			DIST_(j + pointOffset, k) = 0;
 			for (e=0; e<dims; e++)
 			{
-				int lol = (X_(j+pointOffset, e) - CENT_(k, e)) * (X_(j+pointOffset, e) - CENT_(k, e));
 				DIST_(j+pointOffset, k) += (X_(j+pointOffset, e) - CENT_(k, e)) * (X_(j+pointOffset, e) - CENT_(k, e));
 			}
 			

@@ -9,7 +9,7 @@
 #ifndef cudaKmeans_kernel_h
 #define cudaKmeans_kernel_h
 
-#define data_t int
+#define data_t float
 
 #define X_(p,d)       (x[(p) * dims + (d)])
 #define DIST_(p, c)   (dist[(p) * numCent + (c)])

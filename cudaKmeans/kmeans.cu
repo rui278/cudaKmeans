@@ -37,7 +37,7 @@
 /*        2013/1014                                      */
 /*                                                       */
 /*  To run:                                              */
-/*  kmeans numPoints numCents Dims Range RandSeed <numIt>*/
+/*  kmeans numPoints numCents Dims Range RandSeed [numIt]*/
 /*                                                       */
 /*                                                       */
 /*********************************************************/
@@ -58,6 +58,8 @@
 #ifdef COUNTTIME
 /* Calculates the difference between two times, in seconds. */
 double timeDiff(struct timespec tStart, struct timespec tEnd);
+void addTime(struct timespec* target, struct timespec deltaStart, struct timespec deltaEnd);
+double timeInSecs(struct timespec time);
 #endif
 
 void mySrand(int seed);
@@ -117,16 +119,18 @@ int main(int argc, char *argv[])
 
 	struct timespec memBackStartTime;
 	struct timespec memBackEndTime;
+
+	struct timespec clearValsTime;
+	struct timespec classifyPointsTime;
+	struct timespec calculateCentsTime;
 #endif
 
 	/* Check correct number of input parameters */
-	if ((argc!=6)&&(argc!=7))
+	if ((argc!=6) && (argc!=7) && (argc!=11))
 	{
-		printf("format: k-means numPoints numCents Dims Range RandSeed <numIt>\n");
+		printf("Usage: %s numPoints numCents Dims Range RandSeed [numIt [blocks threadsPerBlock pointsPerThread centsPerThread]] \n", argv[0]);
 		exit(1);
 	}
-
-	printf("Reading Arguments\n");
 
 	numPoints	= atoi(argv[1]);
 	numCent		= atoi(argv[2]);
@@ -134,7 +138,7 @@ int main(int argc, char *argv[])
 	range		= atoi(argv[4]);
 	randSeed	= atoi(argv[5]);
 
-	if(argc == 7)
+	if(argc >= 7)
 		NUMIT = atoi(argv[6]);
 
 	if(numCent > numPoints)
@@ -184,24 +188,38 @@ int main(int argc, char *argv[])
 	// For the classifyPoints kernel
 	// Work to be done: numPoints
 
-	numPointsPerThread = numPoints / 4096;
-		if (numPoints % 4096 != 0)
-			numPointsPerThread++;
+	int blockLimitLow = (props.maxThreadsPerMultiProcessor / props.maxThreadsPerBlock) * props.multiProcessorCount;
 
-	numBlocks = 4;
-	numThreadsPerBlock = 1024;
+	if (numPoints < props.maxThreadsPerBlock * blockLimitLow)
+		numBlocks = blockLimitLow;
+	else
+		numBlocks = 2 * blockLimitLow;
 
-	numCentPerThread = numCent / 4096;
-		if (numCent % 4096 != 0)
-			numCentPerThread++; // Always round up
+	numThreadsPerBlock = (numPoints + numBlocks - 1) / numBlocks;
 
-	// Test
-	numThreadsPerBlock = 1024;
-	numBlocks = (numPoints / 4 + numThreadsPerBlock - 1) / numThreadsPerBlock;
-	numPointsPerThread = 4;
+	numPointsPerThread = 1;
 	numCentPerThread = 1;
-	
 
+	//numCentPerThread = numCent / 4096;
+	//	if (numCent % 4096 != 0)
+	//		numCentPerThread++; // Always round up
+
+	// Test: [blocks threadsPerBlock pointsPerThread]
+	if (argc == 11)
+	{
+		numThreadsPerBlock = atoi(argv[7]);
+		numBlocks = atoi(argv[8]);
+		numPointsPerThread = atoi(argv[9]);
+		numCentPerThread = atoi(argv[10]);
+	}
+	
+	// Output parameters for reference
+	printf("\n\
+		   blocks            = %d\n\
+		   threads per block = %d\n\
+		   points per thread = %d\n\
+		   cents per thread  = %d\n\n",
+		   numBlocks, numThreadsPerBlock, numPointsPerThread, numCentPerThread);
 
 	/* Memory allocation on the CUDA device */
 
@@ -242,11 +260,11 @@ int main(int argc, char *argv[])
 	{
 		for(j = 0; j < dims; j++)
 		{
-			X_(n,j) = myRand() % range;
+			X_(n,j) = (data_t) (myRand() % range);
 			mean[j] += X_(n,j);
 
 			if(n < numCent){
-				CENT_(n, j) = myRand() % range;
+				CENT_(n, j) = (data_t) (myRand() % range);
 			}
 
 		}
@@ -305,12 +323,28 @@ int main(int argc, char *argv[])
 	cudaDeviceGetLimit(&heap_size, cudaLimitMallocHeapSize);
 
 #ifdef COUNTTIME
+	struct timespec tempStartTime;
+	struct timespec tempEndTime;
+	
+	clearValsTime.tv_sec = 0;
+	clearValsTime.tv_nsec = 0;
+	classifyPointsTime.tv_sec = 0;
+	classifyPointsTime.tv_nsec = 0;
+	calculateCentsTime.tv_sec = 0;
+	calculateCentsTime.tv_nsec = 0;
+	
 	clock_gettime(CLOCK_REALTIME, &startTime);
+
 #endif
 
 	int it;
 	for (it = 0; it < NUMIT; it++)
 	{
+
+		#ifdef COUNTKERNELTIME
+		clock_gettime(CLOCK_REALTIME, &tempStartTime);
+		#endif
+
 		clearVars<<<numBlocks, numThreadsPerBlock>>>(
 						numCent,
 						dims,
@@ -318,6 +352,12 @@ int main(int argc, char *argv[])
 						device_cent_r,
 						device_cent_tot
 						);
+
+		#ifdef COUNTKERNELTIME
+		cudaDeviceSynchronize();
+		clock_gettime(CLOCK_REALTIME, &tempEndTime);
+		addTime(&clearValsTime, tempStartTime, tempEndTime);
+		#endif
 
 		///* Pull results back from device */
 		//data_t *checkCent_r = (int *) malloc(numCent * dims * sizeof(data_t));
@@ -331,6 +371,10 @@ int main(int argc, char *argv[])
 		//free (checkCent_r);
 
 		// cudaMemset(device_dist, 0, numPoints * numCent * sizeof(data_t));
+
+		#ifdef COUNTKERNELTIME
+		clock_gettime(CLOCK_REALTIME, &tempStartTime);
+		#endif
 
 		classifyPoints<<<numBlocks, numThreadsPerBlock>>>(
 						NUMIT,
@@ -346,6 +390,12 @@ int main(int argc, char *argv[])
 						device_cent_tot
 						);
 
+		#ifdef COUNTKERNELTIME
+		cudaDeviceSynchronize();
+		clock_gettime(CLOCK_REALTIME, &tempEndTime);
+		addTime(&classifyPointsTime, tempStartTime, tempEndTime);
+		#endif
+
 		/* Pull results back from device */
 		//data_t *checkDist = (int *) malloc(numCent * numPoints * sizeof(data_t));
 		//cudaMemcpy (checkDist, device_dist, numCent * numPoints * sizeof(data_t), cudaMemcpyDeviceToHost);
@@ -359,6 +409,10 @@ int main(int argc, char *argv[])
 		//	}
 		//}
 		//free (checkDist);
+		
+		#ifdef COUNTKERNELTIME
+		clock_gettime(CLOCK_REALTIME, &tempStartTime);
+		#endif
 
 		calculateCentroids<<<numBlocks, numThreadsPerBlock>>>(
 						NUMIT,
@@ -375,6 +429,11 @@ int main(int argc, char *argv[])
 						device_cent_tot
 						);
 
+		#ifdef COUNTKERNELTIME
+		cudaDeviceSynchronize();
+		clock_gettime(CLOCK_REALTIME, &tempEndTime);
+		addTime(&calculateCentsTime, tempStartTime, tempEndTime);
+		#endif
 	}
 	cudaDeviceSynchronize();
 
@@ -422,6 +481,8 @@ int main(int argc, char *argv[])
 #ifdef COUNTTIME
 	clock_gettime(CLOCK_REALTIME, &memBackEndTime);
 #endif
+	
+	int mistakesWereMade = 0;
 
 	/* Verify device results */
 	for (j = 0; j < numPoints; j++)
@@ -430,7 +491,8 @@ int main(int argc, char *argv[])
 		{
 			printf("Error: Host and device bestCent results do not match.\n");
 			printf("Error at %d\n\tHost has %d\n\tDevice has %d\n", j, bestCent[j], cudaBestCent[j]);
-			exit(1);
+			mistakesWereMade = 1;
+			break;
 		}
 	}
 
@@ -439,13 +501,24 @@ int main(int argc, char *argv[])
 		int e;
 		for (e = 0; e < dims; e++)
 		{
-			if (cent[k * dims + e] != cudaCent[k * dims + e])
+			if (fabs((cent[k * dims + e] - cudaCent[k * dims + e]) / cent[k * dims + e]) > 1e-2)
 			{
 				printf("Error: Host and device cent results do not match.\n");
-				printf("Error at centroid %d\n", k);
-				exit(1);
+				printf("Error at centroid %d, dim %d. Host has %f, device has %f\n",
+					k,
+					e,
+					(float) cent[k * dims + e],
+					(float) cudaCent[k * dims + e]);
+				mistakesWereMade = 1;
+				break;
 			}
 		}
+	}
+
+	if (mistakesWereMade)
+	{
+		printf(":(\n");
+		exit(1);
 	}
 
 	///* write clusters to screen */
@@ -471,6 +544,14 @@ int main(int argc, char *argv[])
 	printf("Algorithm Host Computation:      %f s\n", hostTime);
 	printf("Algorithm Device Computation:    %f s\n", deviceTime);
 	printf("Communication Device->Host time: %f s\n", timeDiff(memBackStartTime, memBackEndTime));
+
+	#ifdef COUNTKERNELTIME
+	printf("\n");
+	printf("clearVals kernel:                %f s\n", timeInSecs(clearValsTime));
+	printf("classifyPoints kernel:           %f s\n", timeInSecs(classifyPointsTime));
+	printf("calculateCentroids kernel:       %f s\n", timeInSecs(calculateCentsTime));
+	#endif
+	
 	printf("\nSpeed-up: %f\n", hostTime / deviceTime);
 #endif
 
@@ -482,7 +563,7 @@ int main(int argc, char *argv[])
 /**
 * timeDiff
 *
-* Computes the difference (in ns) between the start and end time
+* Computes the difference (in seconds) between the start and end time
 */
 double timeDiff(struct timespec tStart, struct timespec tEnd)
 {
@@ -492,6 +573,32 @@ double timeDiff(struct timespec tStart, struct timespec tEnd)
 	diff.tv_nsec = tEnd.tv_nsec - tStart.tv_nsec + (tEnd.tv_nsec<tStart.tv_nsec?1000000000:0);
 
 	return ((double) diff.tv_sec) + ((double) diff.tv_nsec)/1e9;
+}
+
+/**
+* addTime
+*
+* Adds a certain time interval between two times to another time structure
+*/
+void addTime(struct timespec* target, struct timespec deltaStart, struct timespec deltaEnd)
+{
+	struct timespec diff;
+	diff.tv_sec  = deltaEnd.tv_sec  - deltaStart.tv_sec  - (deltaEnd.tv_nsec<deltaStart.tv_nsec?1:0);
+	diff.tv_nsec = deltaEnd.tv_nsec - deltaStart.tv_nsec + (deltaEnd.tv_nsec<deltaStart.tv_nsec?1000000000:0);
+
+	target->tv_sec += diff.tv_sec;
+
+	long int nanos = target->tv_nsec + diff.tv_nsec;
+
+	if (nanos / 1000000000 > 0)
+		target->tv_sec++;
+
+	target->tv_nsec = nanos % 1000000000;
+}
+
+double timeInSecs(struct timespec time)
+{
+	return ((double) time.tv_sec) + ((double) time.tv_nsec)/1e9;
 }
 #endif
 
