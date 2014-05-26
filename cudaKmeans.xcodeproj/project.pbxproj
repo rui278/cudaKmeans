@@ -29,6 +29,9 @@
 		4D4C31C5192DE8B5002FEE2F /* kernel.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = kernel.h; sourceTree = "<group>"; };
 		4D73B7EA192BB60F00BBE357 /* cudaKmeans */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = cudaKmeans; sourceTree = BUILT_PRODUCTS_DIR; };
 		4D73B7EF192BB60F00BBE357 /* cudaKmeans.1 */ = {isa = PBXFileReference; lastKnownFileType = text.man; path = cudaKmeans.1; sourceTree = "<group>"; };
+		4D8D61151933A3F800A9BB53 /* hostKmeans.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = hostKmeans.h; sourceTree = "<group>"; };
+		4D8D61161933A3F800A9BB53 /* macros.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = macros.h; sourceTree = "<group>"; };
+		4D8D61171933A3F800A9BB53 /* hostKmeans.cu */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = hostKmeans.cu; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -61,6 +64,9 @@
 		4D73B7EC192BB60F00BBE357 /* cudaKmeans */ = {
 			isa = PBXGroup;
 			children = (
+				4D8D61151933A3F800A9BB53 /* hostKmeans.h */,
+				4D8D61161933A3F800A9BB53 /* macros.h */,
+				4D8D61171933A3F800A9BB53 /* hostKmeans.cu */,
 				4D24E439192E61A0004EF18A /* kernel.cu */,
 				4D24E43A192E61A0004EF18A /* kmeans.cu */,
 				4D4C31C5192DE8B5002FEE2F /* kernel.h */,
