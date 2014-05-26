@@ -10,12 +10,10 @@
 #include <string.h>
 #include <limits.h>
 
-#include "kernel.h"
-
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 
-
+#include "kernel.h"
 
 
 /* Clears the vars cent_r, local_tot and tot */
@@ -53,56 +51,64 @@ __global__ void
 
 
 
-/* Classify points to nearest centroid. Part 1 */
+/* Classify points to nearest centroid. Calculate distance matrix and minimum */
 __global__ void
 	classifyPoints(int NUMIT, int numPoints, int numCent, int dims,
-	data_t * x, data_t * dist, data_t * cent,
+	data_t * x, data_t * cent,
 	int * bestCent,
 	data_t * cent_r,	/* Temporary accumulation cells for each centroid's mean coordinates. All the threads will accumulate here, so they must use atomicAdd. Length: dims * numCent. */
 	int pointsPerThread,
 	int* tot			/* Number of points of each centroid, from the points belonging to a certain CUDA block. */
 	)
 {
-	int pointOffset = (blockDim.x * blockIdx.x + threadIdx.x) * pointsPerThread;
+	int pointOffset = (blockDim.x * blockIdx.x + threadIdx.x) /* * pointsPerThread*/;
 
-	int j, k;
-
-	/* calculate distance matrix and minimum */
+	int j;
+	int k;
+	int e;
+	
+	data_t temp;
 	data_t rMin;
+	data_t distance;
+
 
 	for (j=0; j<pointsPerThread; j++)
 	{
 
 		/* Last threads of last block may not have a round number of points */
-		if (pointOffset + j >= numPoints)
+		if (pointOffset+j >= numPoints)
 		{
 			return;
 		}
 
 		// Find this point's nearest centroid
+		// TODO consider loop unrolling here
 		rMin=INT_MAX;
+
 		for (k=0; k < numCent; k++)
 		{
-			int e;
-			DIST_(j + pointOffset, k) = 0;
+			distance = 0;
+			//DIST_(pointOffset, k) = 0;
+
 			for (e=0; e<dims; e++)
 			{
-				DIST_(j+pointOffset, k) += (X_(j+pointOffset, e) - CENT_(k, e)) * (X_(j+pointOffset, e) - CENT_(k, e));
+				temp = (X_(pointOffset+j, e) - CENT_(k, e));
+				// DIST_(pointOffset, k) += (X_(pointOffset, e) - CENT_(k, e)) * (X_(pointOffset, e) - CENT_(k, e));
+				distance += temp * temp; // (X_(pointOffset+j, e) - CENT_(k, e)) * (X_(pointOffset+j, e) - CENT_(k, e));
 			}
-			
-			if (DIST_(j+pointOffset, k) < rMin)
+
+			if ( /* DIST_(pointOffset, k) */ distance < rMin)
 			{
-				bestCent[j+pointOffset]=k;
-				rMin=DIST_(j+pointOffset, k);
+				bestCent[pointOffset+j]=k;
+				rMin=distance; //DIST_(pointOffset, k);
 			}
 		}
 
-		int e;
 		for (e = 0; e < dims; e++)
 		{
-			atomicAdd(&CENT_R_(bestCent[j+pointOffset], e), X_(j+pointOffset, e));
+			atomicAdd(&CENT_R_(bestCent[pointOffset+j], e), X_(pointOffset+j, e));
 		}
-		atomicAdd( &(tot[bestCent[j+pointOffset]]) , 1 );
+		atomicAdd( &(tot[bestCent[pointOffset+j]]), 1 );
 	}
 }
 

@@ -53,7 +53,14 @@
 
 #include "cuda_runtime.h"
 
+#include "macros.h"
+#include "hostKmeans.h"
 #include "kernel.h"
+
+#ifdef WIN_COUNTTIME
+#include <sys/types.h>
+#include <sys/timeb.h>
+#endif
 
 #ifdef COUNTTIME
 /* Calculates the difference between two times, in seconds. */
@@ -120,9 +127,19 @@ int main(int argc, char *argv[])
 	struct timespec memBackStartTime;
 	struct timespec memBackEndTime;
 
+#ifdef COUNTKERNELTIME
 	struct timespec clearValsTime;
 	struct timespec classifyPointsTime;
 	struct timespec calculateCentsTime;
+#endif
+#endif
+
+#ifdef WIN_COUNTTIME
+	struct _timeb hostStartTimeBuf;
+	struct _timeb hostEndTimeBuf;
+
+	struct _timeb deviceStartTimeBuf;
+	struct _timeb deviceEndTimeBuf;
 #endif
 
 	/* Check correct number of input parameters */
@@ -183,32 +200,40 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 
-	// int maxThreads = props.maxThreadsPerMultiProcessor * props
-
-	// For the classifyPoints kernel
 	// Work to be done: numPoints
 
-	int blockLimitLow = (props.maxThreadsPerMultiProcessor / props.maxThreadsPerBlock) * props.multiProcessorCount;
+	numThreadsPerBlock = 64;
+	if (props.maxThreadsPerBlock < 64)
+		numThreadsPerBlock = props.maxThreadsPerBlock;
 
-	if (numPoints < props.maxThreadsPerBlock * blockLimitLow)
-		numBlocks = blockLimitLow;
-	else
-		numBlocks = 2 * blockLimitLow;
+	numBlocks = (numPoints + numThreadsPerBlock - 1) / numThreadsPerBlock;
 
-	numThreadsPerBlock = (numPoints + numBlocks - 1) / numBlocks;
+	//int blockLimitLow = (props.maxThreadsPerMultiProcessor / props.maxThreadsPerBlock) * props.multiProcessorCount;
+
+	//if (numPoints < props.maxThreadsPerBlock * blockLimitLow)
+	//	numBlocks = blockLimitLow;
+	//else
+	//	numBlocks = 2 * blockLimitLow;
+
+	//numThreadsPerBlock = (numPoints + numBlocks - 1) / numBlocks;
 
 	numPointsPerThread = 1;
 	numCentPerThread = 1;
+
+	// Heuristic adjustment: use half of the max threads per block (1024)
+	//numThreadsPerBlock = props.maxThreadsPerBlock;
+
+	//numBlocks = (numPoints + numThreadsPerBlock - 1) / numThreadsPerBlock;
 
 	//numCentPerThread = numCent / 4096;
 	//	if (numCent % 4096 != 0)
 	//		numCentPerThread++; // Always round up
 
-	// Test: [blocks threadsPerBlock pointsPerThread]
 	if (argc == 11)
 	{
-		numThreadsPerBlock = atoi(argv[7]);
-		numBlocks = atoi(argv[8]);
+		printf("Overriding values with arguments.\n");
+		numBlocks = atoi(argv[7]);
+		numThreadsPerBlock = atoi(argv[8]);
 		numPointsPerThread = atoi(argv[9]);
 		numCentPerThread = atoi(argv[10]);
 	}
@@ -299,11 +324,15 @@ int main(int argc, char *argv[])
 	}
 
 #ifdef COUNTTIME
+	cudaDeviceSynchronize();
 	clock_gettime(CLOCK_REALTIME, &endCommTime);
 #endif
 
 	printf("Starting host calculation.\n");
 
+#ifdef WIN_COUNTTIME
+	_ftime( &hostStartTimeBuf );
+#endif
 #ifdef COUNTTIME
 	clock_gettime(CLOCK_REALTIME, &hostStartTime);
 #endif
@@ -316,13 +345,22 @@ int main(int argc, char *argv[])
 #ifdef COUNTTIME
 	clock_gettime(CLOCK_REALTIME, &hostEndTime);
 #endif
+#ifdef WIN_COUNTTIME
+	_ftime( &hostEndTimeBuf );
+#endif
 
 	printf("Starting device calculation.\n");
 
 	size_t heap_size;
 	cudaDeviceGetLimit(&heap_size, cudaLimitMallocHeapSize);
 
+
+#ifdef WIN_COUNTTIME
+	_ftime( &deviceStartTimeBuf );
+#endif
+
 #ifdef COUNTTIME
+#ifdef COUNTKERNELTIME
 	struct timespec tempStartTime;
 	struct timespec tempEndTime;
 	
@@ -332,7 +370,8 @@ int main(int argc, char *argv[])
 	classifyPointsTime.tv_nsec = 0;
 	calculateCentsTime.tv_sec = 0;
 	calculateCentsTime.tv_nsec = 0;
-	
+#endif
+
 	clock_gettime(CLOCK_REALTIME, &startTime);
 
 #endif
@@ -382,7 +421,6 @@ int main(int argc, char *argv[])
 						numCent,
 						dims,
 						device_x,
-						device_dist,
 						device_cent,
 						device_bestCent,
 						device_cent_r,
@@ -441,11 +479,13 @@ int main(int argc, char *argv[])
 	if (err[0] != cudaSuccess)
 	{
 		printf("Oh no, something happened: %s\n", cudaGetErrorString(err[0]));
-		exit(1);
 	}
 
 #ifdef COUNTTIME
 	clock_gettime(CLOCK_REALTIME, &endTime);
+#endif
+#ifdef WIN_COUNTTIME
+	_ftime( &deviceEndTimeBuf );
 #endif
 
 	printf("End of device calculation.\n");
@@ -501,7 +541,7 @@ int main(int argc, char *argv[])
 		int e;
 		for (e = 0; e < dims; e++)
 		{
-			if (fabs((cent[k * dims + e] - cudaCent[k * dims + e]) / cent[k * dims + e]) > 1e-2)
+			if (abs((cent[k * dims + e] - cudaCent[k * dims + e]) / cent[k * dims + e]) > 1e-2)
 			{
 				printf("Error: Host and device cent results do not match.\n");
 				printf("Error at centroid %d, dim %d. Host has %f, device has %f\n",
@@ -552,6 +592,16 @@ int main(int argc, char *argv[])
 	printf("calculateCentroids kernel:       %f s\n", timeInSecs(calculateCentsTime));
 	#endif
 	
+	printf("\nSpeed-up: %f\n", hostTime / deviceTime);
+#endif
+
+#ifdef WIN_COUNTTIME
+	double hostTime = ((hostEndTimeBuf.time - hostStartTimeBuf.time) + (hostEndTimeBuf.millitm - hostStartTimeBuf.millitm) / 1000.0);
+	double deviceTime = ((deviceEndTimeBuf.time - deviceStartTimeBuf.time) + (deviceEndTimeBuf.millitm - deviceStartTimeBuf.millitm) / 1000.0);
+
+	printf("Algorithm Host Computation:      %f s\n", hostTime);
+	printf("Algorithm Device Computation:    %f s\n", deviceTime);
+
 	printf("\nSpeed-up: %f\n", hostTime / deviceTime);
 #endif
 
