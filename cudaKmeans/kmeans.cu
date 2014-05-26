@@ -202,9 +202,9 @@ int main(int argc, char *argv[])
 
 	// Work to be done: numPoints
 
-	numThreadsPerBlock = 64;
-	if (props.maxThreadsPerBlock < 64)
-		numThreadsPerBlock = props.maxThreadsPerBlock;
+	numThreadsPerBlock = 1024;
+	//if (props.maxThreadsPerBlock < 64)
+	//	numThreadsPerBlock = props.maxThreadsPerBlock;
 
 	numBlocks = (numPoints + numThreadsPerBlock - 1) / numThreadsPerBlock;
 
@@ -376,6 +376,9 @@ int main(int argc, char *argv[])
 
 #endif
 
+	// (dims+1) to store the total
+	int sharedCentMemSize = numCent * (dims+1) * sizeof(data_t);
+
 	int it;
 	for (it = 0; it < NUMIT; it++)
 	{
@@ -415,7 +418,7 @@ int main(int argc, char *argv[])
 		clock_gettime(CLOCK_REALTIME, &tempStartTime);
 		#endif
 
-		classifyPoints<<<numBlocks, numThreadsPerBlock>>>(
+		classifyPoints<<<numBlocks, numThreadsPerBlock, sharedCentMemSize>>>(
 						NUMIT,
 						numPoints,
 						numCent,

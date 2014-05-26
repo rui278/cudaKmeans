@@ -61,6 +61,10 @@ __global__ void
 	int* tot			/* Number of points of each centroid, from the points belonging to a certain CUDA block. */
 	)
 {
+	// Layout: temp_cent_r[c * (dims+1) + dim] -> c_dim
+	// Layout: temp_cent_r[c * (dims+1) + dims] -> total_c
+	extern __shared__ data_t temp_cent_r[];
+
 	int pointOffset = (blockDim.x * blockIdx.x + threadIdx.x) /* * pointsPerThread*/;
 
 	int j;
@@ -71,6 +75,14 @@ __global__ void
 	data_t rMin;
 	data_t distance;
 
+
+	for (e = 0; e < dims; e++)
+	{
+		SHARED_CENT_R(threadIdx.x % numCent, e) = 0;
+	}
+	SHARED_TOTAL(threadIdx.x % numCent) = 0;
+
+	__syncthreads();
 
 	for (j=0; j<pointsPerThread; j++)
 	{
@@ -106,9 +118,25 @@ __global__ void
 
 		for (e = 0; e < dims; e++)
 		{
-			atomicAdd(&CENT_R_(bestCent[pointOffset+j], e), X_(pointOffset+j, e));
+			atomicAdd(
+				&SHARED_CENT_R(bestCent[pointOffset+j], e),
+					X_(pointOffset+j, e));
 		}
-		atomicAdd( &(tot[bestCent[pointOffset+j]]), 1 );
+		atomicAdd(
+			&(SHARED_TOTAL(bestCent[pointOffset+j])),
+			1 );
+	}
+
+	__syncthreads();
+
+	// First thread reduces CENT_R to global memory
+	if (threadIdx.x < numCent)
+	{
+		for (e = 0; e < dims; e++)
+		{
+			atomicAdd(&CENT_R_(threadIdx.x, e), SHARED_CENT_R(threadIdx.x, e));
+		}
+		atomicAdd( &(tot[threadIdx.x]), SHARED_TOTAL(threadIdx.x));
 	}
 }
 
