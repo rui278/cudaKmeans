@@ -38,7 +38,8 @@ __global__ void
 		int j;
 		for (j = 0; j < dims; j++)
 		{
-			cent_r[(centOffset + c) * dims + j] = 0;
+			CENT_R_(centOffset + c, j) = 0;
+			// cent_r[(centOffset + c) * dims + j] = 0;
 		}
 
 		// Clear the global variable of this centroid for all blocks
@@ -54,41 +55,32 @@ __global__ void
 /* Classify points to nearest centroid. Calculate distance matrix and minimum */
 __global__ void
 	classifyPoints(int NUMIT, int numPoints, int numCent, int dims,
-	data_t * x, data_t * cent,
+	data_t * x,
+	data_t * cent,
 	int * bestCent,
 	data_t * cent_r,	/* Temporary accumulation cells for each centroid's mean coordinates. All the threads will accumulate here, so they must use atomicAdd. Length: dims * numCent. */
 	int pointsPerThread,
 	int* tot			/* Number of points of each centroid, from the points belonging to a certain CUDA block. */
 	)
 {
-	// Layout: temp_cent_r[c * (dims+1) + dim] -> c_dim
-	// Layout: temp_cent_r[c * (dims+1) + dims] -> total_c
-	extern __shared__ data_t temp_cent_r[];
-
-	int pointOffset = (blockDim.x * blockIdx.x + threadIdx.x) /* * pointsPerThread*/;
+	int pointOffset = (blockDim.x * blockIdx.x + threadIdx.x) * pointsPerThread;
+	int p;
 
 	int j;
 	int k;
 	int e;
 	
-	data_t temp;
+	data_t delta;
 	data_t rMin;
+	int bestK;
 	data_t distance;
-
-
-	for (e = 0; e < dims; e++)
-	{
-		SHARED_CENT_R(threadIdx.x % numCent, e) = 0;
-	}
-	SHARED_TOTAL(threadIdx.x % numCent) = 0;
-
-	__syncthreads();
 
 	for (j=0; j<pointsPerThread; j++)
 	{
+		p = pointOffset+j;
 
 		/* Last threads of last block may not have a round number of points */
-		if (pointOffset+j >= numPoints)
+		if (p >= numPoints)
 		{
 			return;
 		}
@@ -96,6 +88,7 @@ __global__ void
 		// Find this point's nearest centroid
 		// TODO consider loop unrolling here
 		rMin=INT_MAX;
+		bestK = 0;
 
 		for (k=0; k < numCent; k++)
 		{
@@ -104,39 +97,25 @@ __global__ void
 
 			for (e=0; e<dims; e++)
 			{
-				temp = (X_(pointOffset+j, e) - CENT_(k, e));
+				delta = (X_(p, e) - CENT_(k, e));
 				// DIST_(pointOffset, k) += (X_(pointOffset, e) - CENT_(k, e)) * (X_(pointOffset, e) - CENT_(k, e));
-				distance += temp * temp; // (X_(pointOffset+j, e) - CENT_(k, e)) * (X_(pointOffset+j, e) - CENT_(k, e));
+				distance += delta * delta; // (X_(pointOffset+j, e) - CENT_(k, e)) * (X_(pointOffset+j, e) - CENT_(k, e));
 			}
 
 			if ( /* DIST_(pointOffset, k) */ distance < rMin)
 			{
-				bestCent[pointOffset+j]=k;
+				bestK = k;
 				rMin=distance; //DIST_(pointOffset, k);
 			}
 		}
 
+		bestCent[p] = bestK;
+
 		for (e = 0; e < dims; e++)
 		{
-			atomicAdd(
-				&SHARED_CENT_R(bestCent[pointOffset+j], e),
-					X_(pointOffset+j, e));
+			atomicAdd(&CENT_R_(/*bestCent[p]*/bestK, e), X_(p, e));
 		}
-		atomicAdd(
-			&(SHARED_TOTAL(bestCent[pointOffset+j])),
-			1 );
-	}
-
-	__syncthreads();
-
-	// First thread reduces CENT_R to global memory
-	if (threadIdx.x < numCent)
-	{
-		for (e = 0; e < dims; e++)
-		{
-			atomicAdd(&CENT_R_(threadIdx.x, e), SHARED_CENT_R(threadIdx.x, e));
-		}
-		atomicAdd( &(tot[threadIdx.x]), SHARED_TOTAL(threadIdx.x));
+		atomicAdd( &(tot[/*bestCent[p]*/ bestK]), 1 );
 	}
 }
 
@@ -149,18 +128,18 @@ __global__ void
 __global__ void
 	calculateCentroids(int NUMIT, int numPoints, int numCent, int dims,
 	data_t * x,
-	data_t * dist,
 	data_t * cent,
 	data_t * mean,
 	int * bestCent,
-	data_t * cent_r,	/* Temporary accumulation cells for each centroid's mean coordinates. All the threads will accumulate here, so they must use atomicAdd. Length: dims * numCent. */
+	data_t * cent_r,	/* Temporary accumulation cells for each centroid's mean coordinates. Length: dims * numCent. */
 	int numCentPerThread,
 	int* tot			/* Number of points of each centroid, from the points belonging to a certain CUDA block. */
 	)
 {
+	int k, e;
+
 	int centOffset = (blockDim.x * blockIdx.x + threadIdx.x) * numCentPerThread;
 
-	int k;
 	for (k=0; k<numCentPerThread; k++)
 	{
 		if (centOffset + k >= numCent)
@@ -169,18 +148,15 @@ __global__ void
 		/* If centroid has more than 0 points associated (normal), relocate it to mean of its points. */
 		if (tot[k + centOffset] > 0)
 		{
-			int e;
 			for (e=0; e<dims; e++)
-				CENT_(k + centOffset, e)=CENT_R_(k + centOffset, e) / tot[k + centOffset];
+				CENT_(k + centOffset, e) = CENT_R_(k + centOffset, e) / tot[k + centOffset];
 		}
-		/* Else, relocate it to the mean of the other centroids (put it near points) */
+		/* Else, relocate it to the mean of all points */
 		else
 		{
-			int e;
 			for (e=0; e<dims; e++)
-				CENT_(k + centOffset, e)=mean[e];
+				CENT_(k + centOffset, e) = mean[e];
 		}
 	}
-
 
 }

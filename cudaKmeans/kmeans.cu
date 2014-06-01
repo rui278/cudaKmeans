@@ -50,6 +50,7 @@
 #include <math.h>
 #include <ctype.h>
 #include <time.h>
+#include <stdint.h>
 
 #include "cuda_runtime.h"
 
@@ -71,15 +72,19 @@ double timeInSecs(struct timespec time);
 
 void mySrand(int seed);
 int myRand();
+void* alignToCuda(void* pointer, void* offset, int size, cudaDeviceProp props, void** out_nextFreeOffset);
 
 int main(int argc, char *argv[])
 {
+	/* If true, host execution will be skipped, and speed-up will not be calculated. */
+	int skipHost = 0;
 
 	int j;
 	int k;
 	int n;
 
 	/*Host data*/
+	void *host_memory;	/* Big contiguous memory on the host, containing x, cent and mean. */
 	data_t *x;		/* Max values: x[numPoints * Dimensions]. Coordinate of point P, all 'dims' of them. Indexed as [P * dims + dim]. */
 	data_t *cent;	/* Coordinates of each centroid. Max value: [numCent * dims]. Layout is [cx1 cy1 cx2 cy2 cx3 cy3 ...] in case dims=2  */
 	data_t *mean;	/* Length: dims */
@@ -88,16 +93,16 @@ int main(int argc, char *argv[])
 	data_t *cent_r; /* Length: dims. Used as temporary variable. */
 
 	/*Device data*/
-	/* TODO: put device_x in constant texture memory - should be faster */
+	void *device_memory;	/* Big contiguous memory on the device, containing device_x, device_cent and device_mean. */
 	data_t *device_x;		/* Max value: [numPoints * dims]. Layout is [x1 y1 x2 y2 x3 y3 ...] in case dims=2 */
 	data_t *device_cent;	/* Max value: [numCent * dims]. Layout is [cx1 cy1 cx2 cy2 cx3 cy3 ...] in case dims=2 */
 	data_t *device_mean;	/* Max value: [dims]. */
-	data_t *device_dist;	/* Max value: [numPoints * numCent]. Distance between Point P and Centroid C. Indexed as [P * numCent + C]. */
 	int *device_bestCent;	/* Length: numPoints */
 	data_t *device_cent_r;	/* Length: dims * numCent. Used as temporary variables for accumulation. */
 	int *device_cent_tot;	/* Number of points for each centroid, global to all blocks. Length: numCent */
 	int *device_cent_partial_tots;	/* Number of points for each centroid, local to one block. Length: numCent */
 
+	/*Parameters*/
 	int numPoints;	/* Number of points */
 	int dims;		/* Dimensions */
 	int numCent;	/* Number of centroids */
@@ -108,7 +113,8 @@ int main(int argc, char *argv[])
 
 	int numThreadsPerBlock;	/* Number of threads per block */
 	int numPointsPerThread;	/* Number of points per thread */
-	int numBlocks;			/* Number of blocks */
+	int numBlocksCP;			/* Number of blocks for classifyPoints */
+	int numBlocksCC;			/* Number of blocks for calculateCentroids */
 	int numCentPerThread;
 
 	void * hostErr [6];	// Errors for malloc
@@ -143,9 +149,9 @@ int main(int argc, char *argv[])
 #endif
 
 	/* Check correct number of input parameters */
-	if ((argc!=6) && (argc!=7) && (argc!=11))
+	if ((argc!=6) && (argc!=7) && (argc!=11) && (argc!=12))
 	{
-		printf("Usage: %s numPoints numCents Dims Range RandSeed [numIt [blocks threadsPerBlock pointsPerThread centsPerThread]] \n", argv[0]);
+		printf("Usage: %s numPoints numCents Dims Range RandSeed\n\t[numIt [blocks threadsPerBlock pointsPerThread centsPerThread [skipHost(0|1)]]] \n", argv[0]);
 		exit(1);
 	}
 
@@ -157,10 +163,12 @@ int main(int argc, char *argv[])
 
 	if(argc >= 7)
 		NUMIT = atoi(argv[6]);
+	if (argc == 12)
+		skipHost = atoi(argv[11]);
 
-	if(numCent > numPoints)
+	if (numCent >= numPoints)
 	{
-		printf("Number of Centroids must be smaller than the number of points");
+		printf("Number of centroids must be smaller than the number of points");
 		exit(1);
 	}
 
@@ -173,25 +181,6 @@ int main(int argc, char *argv[])
 		   numIt     = %d\n\n",
 		   numPoints, numCent, dims, range, randSeed, NUMIT);
 
-	printf("Allocating host memory\n");
-
-	/* allocate memory */
-	hostErr[0] = x = (data_t *)calloc(numPoints * dims,sizeof(data_t *));
-	hostErr[1] = cent=(data_t *)calloc(numCent * dims,sizeof(data_t *));
-	hostErr[2] = mean=(data_t *)calloc(dims,sizeof(data_t));
-	hostErr[3] = dist=(data_t *)calloc(numPoints * numCent,sizeof(data_t *));
-	hostErr[4] = bestCent=(int *)calloc(numPoints,sizeof(int));
-	hostErr[5] = cent_r=(data_t *)calloc(dims,sizeof(data_t));
-	
-	for(n = 0; n < 6; n++) {
-		if(hostErr[n] == NULL){
-			printf("Error allocating memory on host (error code %s). Exiting.", cudaGetErrorString(err[n]));
-			exit(0);
-		}
-	}
-
-	/* Calculate kernel parameters */
-
 	cudaDeviceProp props;
 	err[0] = cudaGetDeviceProperties (&props, 0);
 	if (err[0] != cudaSuccess)
@@ -200,43 +189,60 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 
+	printf("Allocating host memory\n");
+
+	/* allocate memory */
+	int memBytes =
+		numPoints * dims * sizeof(data_t)	// x
+		+ numCent * dims * sizeof(data_t)	// cent
+		+ dims * sizeof(data_t)				// mean
+		+ props.textureAlignment * 3;		// extra space for alignments
+
+	//hostErr[0] = x = (data_t *)calloc(numPoints * dims,sizeof(data_t));			printf("Allocated %d bytes for x.\n", numPoints * dims,sizeof(data_t));
+	//hostErr[1] = cent=(data_t *)calloc(numCent * dims,sizeof(data_t));			printf("Allocated %d bytes for cent.\n", numCent * dims,sizeof(data_t));
+	//hostErr[2] = mean=(data_t *)calloc(dims,sizeof(data_t));
+
+	hostErr[0] = host_memory = (void*) calloc(memBytes, 1);
+	
+	void* freeOffset = 0;
+	x =		(data_t*) alignToCuda(host_memory, freeOffset, numPoints * dims * sizeof(data_t),	props, &freeOffset);
+	cent =	(data_t*) alignToCuda(host_memory, freeOffset, numCent * dims * sizeof(data_t),		props, &freeOffset);
+	mean =	(data_t*) alignToCuda(host_memory, freeOffset, dims * sizeof(data_t),				props, &freeOffset);
+
+	hostErr[1] = dist=(data_t *)calloc(numPoints * numCent,sizeof(data_t));
+	hostErr[2] = bestCent=(int *)calloc(numPoints,sizeof(int));
+	hostErr[3] = cent_r=(data_t *)calloc(dims,sizeof(data_t));
+	
+	for(n = 0; n < 4; n++) {
+		if(hostErr[n] == NULL){
+			printf("Error allocating memory (hostErr[%d]) on host. Exiting.", n);
+			exit(1);
+		}
+	}
+
+	/* Calculate kernel parameters */
+
 	// Work to be done: numPoints
 
-	numThreadsPerBlock = 1024;
-	//if (props.maxThreadsPerBlock < 64)
-	//	numThreadsPerBlock = props.maxThreadsPerBlock;
+	numThreadsPerBlock = 64;
+	if (props.maxThreadsPerBlock < 64)
+		numThreadsPerBlock = props.maxThreadsPerBlock;
 
-	numBlocks = (numPoints + numThreadsPerBlock - 1) / numThreadsPerBlock;
-
-	//int blockLimitLow = (props.maxThreadsPerMultiProcessor / props.maxThreadsPerBlock) * props.multiProcessorCount;
-
-	//if (numPoints < props.maxThreadsPerBlock * blockLimitLow)
-	//	numBlocks = blockLimitLow;
-	//else
-	//	numBlocks = 2 * blockLimitLow;
-
-	//numThreadsPerBlock = (numPoints + numBlocks - 1) / numBlocks;
+	numBlocksCP = (numPoints + numThreadsPerBlock - 1) / numThreadsPerBlock;
 
 	numPointsPerThread = 1;
 	numCentPerThread = 1;
 
-	// Heuristic adjustment: use half of the max threads per block (1024)
-	//numThreadsPerBlock = props.maxThreadsPerBlock;
-
-	//numBlocks = (numPoints + numThreadsPerBlock - 1) / numThreadsPerBlock;
-
-	//numCentPerThread = numCent / 4096;
-	//	if (numCent % 4096 != 0)
-	//		numCentPerThread++; // Always round up
-
-	if (argc == 11)
+	if (argc >= 11)
 	{
 		printf("Overriding values with arguments.\n");
-		numBlocks = atoi(argv[7]);
+		numBlocksCP = atoi(argv[7]);
 		numThreadsPerBlock = atoi(argv[8]);
 		numPointsPerThread = atoi(argv[9]);
 		numCentPerThread = atoi(argv[10]);
 	}
+
+	numBlocksCC = (numCent + numThreadsPerBlock - 1) / numThreadsPerBlock;
 	
 	// Output parameters for reference
 	printf("\n\
@@ -244,9 +250,14 @@ int main(int argc, char *argv[])
 		   threads per block = %d\n\
 		   points per thread = %d\n\
 		   cents per thread  = %d\n\n",
-		   numBlocks, numThreadsPerBlock, numPointsPerThread, numCentPerThread);
+		   numBlocksCP, numThreadsPerBlock, numPointsPerThread, numCentPerThread);
 
-	/* Memory allocation on the CUDA device */
+	if (numPointsPerThread * numThreadsPerBlock * numBlocksCP < numPoints)
+	{
+		printf("Error: given parameters can only process %d points. Number of points is %d.\n",
+			numPointsPerThread * numThreadsPerBlock * numBlocksCP, numPoints);
+		exit(1);
+	}
 
 	/* Touch the device once to initialize it */
 	err[0] = cudaFree(0);
@@ -256,20 +267,26 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 
-	/*Allocate device memory*/
+	/* Memory allocation on the CUDA device */
 	printf("Allocating device memory\n");
 
-	err[0] = cudaMalloc ((void **) &device_x, numPoints * dims * sizeof(data_t));
-	err[1] = cudaMalloc ((void **) &device_cent, numCent * dims * sizeof(data_t));
-	err[2] = cudaMalloc ((void **) &device_mean, dims * sizeof(data_t));
-	err[3] = cudaMalloc ((void **) &device_dist, numPoints * numCent * sizeof(data_t));
-	err[4] = cudaMalloc ((void **) &device_bestCent, numPoints * sizeof(int));
-	err[5] = cudaMalloc ((void **) &device_cent_r, dims * numCent * sizeof(data_t));
-	
-	err[6] = cudaMalloc ((void **) &device_cent_tot, numCent * sizeof(int));
-	err[7] = cudaMalloc ((void **) &device_cent_partial_tots, numCent * numBlocks * sizeof(int));
+	//err[0] = cudaMalloc ((void **) &device_x, numPoints * dims * sizeof(data_t));
+	//err[1] = cudaMalloc ((void **) &device_cent, numCent * dims * sizeof(data_t));
+	//err[2] = cudaMalloc ((void **) &device_mean, dims * sizeof(data_t));
 
-	for(n = 0; n < 8; n++) {
+	err[0] = cudaMalloc ((void **) &device_memory, memBytes);
+	
+	freeOffset = 0;
+	device_x =		(data_t*) alignToCuda(device_memory, freeOffset, numPoints * dims * sizeof(data_t),	props, &freeOffset);
+	device_cent	=	(data_t*) alignToCuda(device_memory, freeOffset, numCent * dims * sizeof(data_t),	props, &freeOffset);
+	device_mean =	(data_t*) alignToCuda(device_memory, freeOffset, dims * sizeof(data_t),				props, &freeOffset);
+
+	err[1] = cudaMalloc ((void **) &device_bestCent, numPoints * sizeof(int));
+	err[2] = cudaMalloc ((void **) &device_cent_r, dims * numCent * sizeof(data_t));
+	err[3] = cudaMalloc ((void **) &device_cent_tot, numCent * sizeof(int));
+	err[4] = cudaMalloc ((void **) &device_cent_partial_tots, numCent * numBlocksCP * sizeof(int));
+
+	for(n = 0; n < 5; n++) {
 		if(err[n] != cudaSuccess){
 			printf("Error allocating memory on device: %s\nExiting.\n", cudaGetErrorString(err[n]));
 			exit(1);
@@ -281,22 +298,18 @@ int main(int argc, char *argv[])
 
 	mySrand(randSeed);
 
-	for(n = 0; n < numPoints; n ++)
-	{
-		for(j = 0; j < dims; j++)
-		{
+	for(n = 0; n < numPoints; n ++) {
+		for(j = 0; j < dims; j++) {
 			X_(n,j) = (data_t) (myRand() % range);
 			mean[j] += X_(n,j);
 
-			if(n < numCent){
+			if(n < numCent) {
 				CENT_(n, j) = (data_t) (myRand() % range);
 			}
-
 		}
 	}
 
-	for(n = 0; n < dims; n++)
-	{
+	for(n = 0; n < dims; n++) {
 		mean[n] = mean[n]/numPoints;
 	}
 
@@ -306,27 +319,17 @@ int main(int argc, char *argv[])
 	clock_gettime(CLOCK_REALTIME, &startCommTime);
 #endif
 
-	err[0] = cudaMemcpy (device_x, x, numPoints * dims * sizeof(data_t), cudaMemcpyHostToDevice);
-	err[1] = cudaMemcpy (device_cent, cent, numCent * dims * sizeof(data_t), cudaMemcpyHostToDevice);
-	err[2] = cudaMemcpy (device_mean, mean, dims * sizeof(data_t), cudaMemcpyHostToDevice);
-	err[3] = cudaMemcpy (device_dist, dist, numPoints * numCent * sizeof(data_t), cudaMemcpyHostToDevice);
-	err[4] = cudaMemcpy (device_bestCent,bestCent, numPoints * sizeof(int), cudaMemcpyHostToDevice);
-	err[5] = cudaMemcpy (device_cent_r, cent_r, dims * numCent * sizeof(data_t), cudaMemcpyHostToDevice);
-
-	err[6] = cudaMemset (device_cent_tot, 0, numCent * sizeof(int));
-	err[7] = cudaMemset (device_cent_partial_tots, 0, numCent * numBlocks * sizeof(int));
-
-	for(n = 0; n < 8; n++) {
-		if(err[n] != cudaSuccess){
-			printf("Error allocating memory on device (error code %s). Exiting.", cudaGetErrorString(err[n]));
-			exit(0);
-		}
-	}
+	err[0] = cudaMemcpy (device_memory, x, memBytes - ((uintptr_t) x - (uintptr_t) host_memory), cudaMemcpyHostToDevice);
 
 #ifdef COUNTTIME
 	cudaDeviceSynchronize();
 	clock_gettime(CLOCK_REALTIME, &endCommTime);
 #endif
+
+	if(err[0] != cudaSuccess) {
+		printf("Error allocating memory on device: %s. Exiting.", cudaGetErrorString(err[0]));
+		exit(0);
+	}
 
 	printf("Starting host calculation.\n");
 
@@ -337,10 +340,13 @@ int main(int argc, char *argv[])
 	clock_gettime(CLOCK_REALTIME, &hostStartTime);
 #endif
 	
-	// Run algorithm on host for correctness check
-	hostKmeans(NUMIT, numPoints, numCent, dims,
-			x, dist, cent,
-			mean, bestCent, cent_r);
+	if (skipHost == 0)
+	{
+		// Run algorithm on host for correctness check
+		hostKmeans(NUMIT, numPoints, numCent, dims,
+				x, dist, cent,
+				mean, bestCent, cent_r);
+	}
 
 #ifdef COUNTTIME
 	clock_gettime(CLOCK_REALTIME, &hostEndTime);
@@ -350,10 +356,6 @@ int main(int argc, char *argv[])
 #endif
 
 	printf("Starting device calculation.\n");
-
-	size_t heap_size;
-	cudaDeviceGetLimit(&heap_size, cudaLimitMallocHeapSize);
-
 
 #ifdef WIN_COUNTTIME
 	_ftime( &deviceStartTimeBuf );
@@ -376,9 +378,6 @@ int main(int argc, char *argv[])
 
 #endif
 
-	// (dims+1) to store the total
-	int sharedCentMemSize = numCent * (dims+1) * sizeof(data_t);
-
 	int it;
 	for (it = 0; it < NUMIT; it++)
 	{
@@ -387,7 +386,7 @@ int main(int argc, char *argv[])
 		clock_gettime(CLOCK_REALTIME, &tempStartTime);
 		#endif
 
-		clearVars<<<numBlocks, numThreadsPerBlock>>>(
+		clearVars<<<numBlocksCC, numThreadsPerBlock>>>(
 						numCent,
 						dims,
 						numCentPerThread,
@@ -401,24 +400,11 @@ int main(int argc, char *argv[])
 		addTime(&clearValsTime, tempStartTime, tempEndTime);
 		#endif
 
-		///* Pull results back from device */
-		//data_t *checkCent_r = (int *) malloc(numCent * dims * sizeof(data_t));
-		//cudaMemcpy (checkCent_r, device_cent_r, numCent * dims * sizeof(data_t), cudaMemcpyDeviceToHost);
-		//int i;
-		//for (i = 0; i < numCent * dims; i++)
-		//{
-		//	if (checkCent_r[i] != 0)
-		//		printf("Shit's not zero at %d\n", i);
-		//}
-		//free (checkCent_r);
-
-		// cudaMemset(device_dist, 0, numPoints * numCent * sizeof(data_t));
-
 		#ifdef COUNTKERNELTIME
 		clock_gettime(CLOCK_REALTIME, &tempStartTime);
 		#endif
 
-		classifyPoints<<<numBlocks, numThreadsPerBlock, sharedCentMemSize>>>(
+		classifyPoints<<<numBlocksCP, numThreadsPerBlock>>>(
 						NUMIT,
 						numPoints,
 						numCent,
@@ -436,32 +422,17 @@ int main(int argc, char *argv[])
 		clock_gettime(CLOCK_REALTIME, &tempEndTime);
 		addTime(&classifyPointsTime, tempStartTime, tempEndTime);
 		#endif
-
-		/* Pull results back from device */
-		//data_t *checkDist = (int *) malloc(numCent * numPoints * sizeof(data_t));
-		//cudaMemcpy (checkDist, device_dist, numCent * numPoints * sizeof(data_t), cudaMemcpyDeviceToHost);
-		//int i;
-		//for (i = 0; i < numCent * numPoints; i++)
-		//{
-		//	if (checkDist[i] != dist[i])
-		//	{
-		//		printf("Dist shit's not right at %d\n", i);
-		//		break;
-		//	}
-		//}
-		//free (checkDist);
 		
 		#ifdef COUNTKERNELTIME
 		clock_gettime(CLOCK_REALTIME, &tempStartTime);
 		#endif
 
-		calculateCentroids<<<numBlocks, numThreadsPerBlock>>>(
+		calculateCentroids<<<numBlocksCC, numThreadsPerBlock>>>(
 						NUMIT,
 						numPoints,
 						numCent,
 						dims,
 						device_x,
-						device_dist,
 						device_cent,
 						device_mean,
 						device_bestCent,
@@ -527,44 +498,47 @@ int main(int argc, char *argv[])
 	
 	int mistakesWereMade = 0;
 
-	/* Verify device results */
-	for (j = 0; j < numPoints; j++)
+	if (!skipHost)
 	{
-		if (cudaBestCent[j] != bestCent[j])
+		/* Verify device results */
+		for (j = 0; j < numPoints; j++)
 		{
-			printf("Error: Host and device bestCent results do not match.\n");
-			printf("Error at %d\n\tHost has %d\n\tDevice has %d\n", j, bestCent[j], cudaBestCent[j]);
-			mistakesWereMade = 1;
-			break;
-		}
-	}
-
-	for (k = 0; k < numCent; k++)
-	{
-		int e;
-		for (e = 0; e < dims; e++)
-		{
-			if (abs((cent[k * dims + e] - cudaCent[k * dims + e]) / cent[k * dims + e]) > 1e-2)
+			if (cudaBestCent[j] != bestCent[j])
 			{
-				printf("Error: Host and device cent results do not match.\n");
-				printf("Error at centroid %d, dim %d. Host has %f, device has %f\n",
-					k,
-					e,
-					(float) cent[k * dims + e],
-					(float) cudaCent[k * dims + e]);
+				printf("Error: Host and device bestCent results do not match.\n");
+				printf("Error at %d\n\tHost has %d\n\tDevice has %d\n", j, bestCent[j], cudaBestCent[j]);
 				mistakesWereMade = 1;
 				break;
 			}
 		}
+
+		for (k = 0; k < numCent; k++)
+		{
+			int e;
+			for (e = 0; e < dims; e++)
+			{
+				if (abs((cent[k * dims + e] - cudaCent[k * dims + e]) / cent[k * dims + e]) > 1e-2)
+				{
+					printf("Error: Host and device cent results do not match.\n");
+					printf("Error at centroid %d, dim %d. Host has %f, device has %f\n",
+						k,
+						e,
+						(float) cent[k * dims + e],
+						(float) cudaCent[k * dims + e]);
+					mistakesWereMade = 1;
+					break;
+				}
+			}
+		}
+
+		if (mistakesWereMade)
+		{
+			printf(">.<\n");
+			exit(1);
+		}
 	}
 
-	if (mistakesWereMade)
-	{
-		printf(":(\n");
-		exit(1);
-	}
-
-	///* write clusters to screen */
+	///* Write clusters to screen */
 	//printf("\nDevice results\n=========\n");
 
 	//for (k=0; k<numCent; k++)
@@ -577,16 +551,35 @@ int main(int argc, char *argv[])
 	//	}
 	//}
 
+	err[0] = cudaFree (device_memory);
+	err[1] = cudaFree (device_bestCent);
+	err[2] = cudaFree (device_cent_r);
+	err[3] = cudaFree (device_cent_tot);
+	err[4] = cudaFree (device_cent_partial_tots);
+
+	for(n = 0; n < 5; n++) {
+		if(err[n] != cudaSuccess){
+			printf("Error freeing memory on device: %s\nExiting.\n", cudaGetErrorString(err[n]));
+			exit(1);
+		}
+	}
+
 #ifdef COUNTTIME
 
 	double hostTime = timeDiff(hostStartTime, hostEndTime);
 	double deviceTime = timeDiff(startTime, endTime);
+	double memTime = timeDiff(startCommTime, endCommTime);
+	double memBackTime = timeDiff(memBackStartTime, memBackEndTime);
+
+	double commTime = memTime + memBackTime;
 
 	printf("\nTime Report\n=======\n\n");
-	printf("Communication Host->Device time: %f s\n", timeDiff(startCommTime, endCommTime));
-	printf("Algorithm Host Computation:      %f s\n", hostTime);
+	printf("Communication Host->Device time: %f s\n", memTime);
+	printf("Algorithm Host Computation:      %f s",   hostTime); if (skipHost) printf(" (skipped)"); printf("\n");
 	printf("Algorithm Device Computation:    %f s\n", deviceTime);
-	printf("Communication Device->Host time: %f s\n", timeDiff(memBackStartTime, memBackEndTime));
+	printf("Communication Device->Host time: %f s\n", memBackTime);
+
+	printf("\nTotal device time (w/comm):      %f s\n", deviceTime + commTime);
 
 	#ifdef COUNTKERNELTIME
 	printf("\n");
@@ -594,15 +587,19 @@ int main(int argc, char *argv[])
 	printf("classifyPoints kernel:           %f s\n", timeInSecs(classifyPointsTime));
 	printf("calculateCentroids kernel:       %f s\n", timeInSecs(calculateCentsTime));
 	#endif
-	
-	printf("\nSpeed-up: %f\n", hostTime / deviceTime);
+
+	if (!skipHost)
+	{
+		printf("\nSpeed-up:          %f\n", hostTime / deviceTime);
+		printf("\nSpeed-up (w/comm): %f\n", hostTime / (deviceTime + commTime));
+	}
 #endif
 
 #ifdef WIN_COUNTTIME
 	double hostTime = ((hostEndTimeBuf.time - hostStartTimeBuf.time) + (hostEndTimeBuf.millitm - hostStartTimeBuf.millitm) / 1000.0);
 	double deviceTime = ((deviceEndTimeBuf.time - deviceStartTimeBuf.time) + (deviceEndTimeBuf.millitm - deviceStartTimeBuf.millitm) / 1000.0);
 
-	printf("Algorithm Host Computation:      %f s\n", hostTime);
+	printf("\nAlgorithm Host Computation:      %f s\n", hostTime);
 	printf("Algorithm Device Computation:    %f s\n", deviceTime);
 
 	printf("\nSpeed-up: %f\n", hostTime / deviceTime);
@@ -669,4 +666,39 @@ int myRand()
 void mySrand(int seed)
 {
 	randState = seed;
+}
+
+/**
+ * alignToCuda
+ *
+ * Allocates a zone of memory inside a pre-allocated array, aligned to CUDA's memory alignment.
+ * To call this function consecutively to allocate memory inside an array, the same variable should be used for "offset" and "out_nextFreeOffset".
+ *
+ * pointer:				base of the pre-allocated memory
+ * offset:				first free position of the allocated memory, aligned to CUDA's memory alignment
+ * size:				size, in bytes, of the desired memory zone
+ * props:				properties of the CUDA device
+ * out_nextFreeOffset:	output variable. will store the next free offset, aligned to CUDA's memory alignment
+ * 
+ */
+void* alignToCuda(void* pointer, void* offset, int size, cudaDeviceProp props, void** out_nextFreeOffset)
+{
+	const int stride = props.textureAlignment;
+
+	if ((uintptr_t) offset % stride != 0)
+	{
+		printf("Error managing aligned memory.\n");
+		exit(1); // return NULL;
+	}
+
+	uintptr_t tempPtr = (uintptr_t) pointer + (uintptr_t) offset;
+	if (tempPtr % stride != 0)
+		tempPtr = tempPtr + (stride - tempPtr % stride);
+
+	// Write to output variable: next free offset of this array
+	uintptr_t nextFreeOffset = ((uintptr_t) offset + size);
+	nextFreeOffset = nextFreeOffset + (stride - nextFreeOffset % stride);
+	*out_nextFreeOffset = (void*) nextFreeOffset;
+
+	return (void*) tempPtr;
 }
